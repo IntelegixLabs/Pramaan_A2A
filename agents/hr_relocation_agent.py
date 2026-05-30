@@ -1,19 +1,19 @@
 """
-HandshakeOS - Finance Disbursement Agent (LangChain Framework)
-LangChain-based agent with governance-aware tools for executing payments.
-Executes payments ONLY with a valid Trust Receipt from the AGL Gateway.
+HandshakeOS - HR Relocation Agent (LangChain Framework)
+LangChain-based agent with governance-aware tools for creating relocation
+payment requests and building AGL governance envelopes.
 
-Uses LangChain's tool-calling pattern with a deterministic governance
+Uses LangChain's tool-calling agent pattern with a deterministic governance
 LLM (no API key required) — swap in any ChatModel for production use.
 """
 
+import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
-from typing import Iterator
+from typing import Optional, Any, Iterator
 
 from langchain_core.tools import tool
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, BaseMessage
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.prebuilt import create_react_agent
@@ -27,83 +27,75 @@ from a2a.types import (
 )
 from google.protobuf import struct_pb2
 
-from agl.trust_receipt import TrustReceipt
+from agl.governance_envelope import (
+    build_governance_envelope,
+    build_a2a_message,
+    DelegationProof,
+    PolicyProof,
+    RiskSignals,
+)
 
 
 # ────────────────────────────────────────────────────────
-# LangChain Tools for Finance Disbursement Governance
+# LangChain Tools for HR Relocation Governance
 # ────────────────────────────────────────────────────────
 
-# Module-level receipt store so tools can access it
-_executed_receipts_store: set[str] = set()
+@tool
+def create_relocation_case(employee_case_ref: str, amount: float, currency: str = "USD", description: str = "") -> str:
+    """Create a new employee relocation case with the specified amount and reference."""
+    case = {
+        "type": "relocation-disbursement",
+        "employeeCaseRef": employee_case_ref,
+        "amount": amount,
+        "currency": currency,
+        "description": description or f"Relocation disbursement for case {employee_case_ref}",
+        "status": "CREATED",
+    }
+    return json.dumps(case)
 
 
 @tool
-def verify_trust_receipt(receipt_json: str) -> str:
-    """Verify a Trust Receipt is valid and approved for payment execution.
-    Returns verification result including receipt ID and decision."""
-    try:
-        data = json.loads(receipt_json) if isinstance(receipt_json, str) else receipt_json
-    except (json.JSONDecodeError, TypeError):
-        return json.dumps({"valid": False, "reason": "Invalid Trust Receipt format"})
-
-    receipt = TrustReceipt.from_dict(data)
-
-    if not receipt.approved or receipt.decision != "APPROVED":
-        return json.dumps({
-            "valid": False,
-            "reason": f"Trust Receipt decision: {receipt.decision}. Cannot execute.",
-            "receipt_id": receipt.receipt_id,
-        })
-
-    if receipt.receipt_id in _executed_receipts_store:
-        return json.dumps({
-            "valid": False,
-            "reason": "Trust Receipt already used. One-time-use constraint violated.",
-            "receipt_id": receipt.receipt_id,
-        })
-
-    return json.dumps({
-        "valid": True,
-        "receipt_id": receipt.receipt_id,
-        "handshake_id": receipt.handshake_id,
-        "action": receipt.action,
-        "requester": receipt.requester,
-        "target": receipt.target,
-        "quorum": receipt.poa_quorum,
-    })
+def validate_relocation_amount(amount: float, max_limit: float = 10000.0) -> str:
+    """Validate that the relocation amount is within the allowed policy limit."""
+    if amount <= 0:
+        return json.dumps({"valid": False, "reason": "Amount must be positive"})
+    if amount > max_limit:
+        return json.dumps({"valid": False, "reason": f"Amount ${amount:,.0f} exceeds limit ${max_limit:,.0f}"})
+    return json.dumps({"valid": True, "amount": amount, "limit": max_limit, "headroom": max_limit - amount})
 
 
 @tool
-def execute_payment(receipt_id: str, handshake_id: str, action: str, requester: str) -> str:
-    """Execute the payment after Trust Receipt verification.
-    Marks the receipt as used (one-time-use enforcement)."""
-    now = datetime.now(timezone.utc).isoformat()
-    payment_id = f"pay-{uuid.uuid4().hex[:8]}"
+def check_agent_authority(action: str, allowed_actions: str, forbidden_actions: str) -> str:
+    """Check if the agent has authority to perform the requested action.
+    allowed_actions and forbidden_actions should be comma-separated lists."""
+    allowed = [a.strip() for a in allowed_actions.split(",")]
+    forbidden = [a.strip() for a in forbidden_actions.split(",")]
+    if action in forbidden:
+        return json.dumps({"authorized": False, "reason": f"Action '{action}' is explicitly forbidden"})
+    if action in allowed or any(action.startswith(a.rsplit(".", 1)[0]) for a in allowed):
+        return json.dumps({"authorized": True, "action": action})
+    return json.dumps({"authorized": False, "reason": f"Action '{action}' not in allowed actions"})
 
-    # Mark receipt as used
-    _executed_receipts_store.add(receipt_id)
 
+@tool
+def prepare_governance_envelope_data(
+    requester_did: str,
+    target_did: str,
+    action: str,
+    case_ref: str,
+    amount: float,
+) -> str:
+    """Prepare the governance envelope metadata for a governed A2A request."""
+    intent_hash = hashlib.sha256(f"{action}:{case_ref}".encode()).hexdigest()
     return json.dumps({
-        "paymentId": payment_id,
-        "status": "EXECUTED",
-        "trustReceiptId": receipt_id,
-        "handshakeId": handshake_id,
+        "requester_did": requester_did,
+        "target_did": target_did,
         "action": action,
-        "requester": requester,
-        "executedAt": now,
-        "executedBy": "did:gcc:agent:finance-disbursement-02",
-    })
-
-
-@tool
-def check_duplicate_receipt(receipt_id: str) -> str:
-    """Check if a Trust Receipt has already been used (replay protection)."""
-    is_duplicate = receipt_id in _executed_receipts_store
-    return json.dumps({
-        "receipt_id": receipt_id,
-        "is_duplicate": is_duplicate,
-        "reason": "Receipt already used" if is_duplicate else "Receipt not yet used",
+        "case_ref": case_ref,
+        "amount": amount,
+        "intent_hash": intent_hash,
+        "skill_id": "release-relocation-payment",
+        "status": "ENVELOPE_READY",
     })
 
 
@@ -111,124 +103,164 @@ def check_duplicate_receipt(receipt_id: str) -> str:
 # Governance-aware deterministic LLM
 # ────────────────────────────────────────────────────────
 
-FINANCE_SYSTEM_PROMPT = """You are the Finance Disbursement Agent for GCC Ascend.
-Your role is to execute approved employee relocation payments.
+HR_SYSTEM_PROMPT = """You are the HR Relocation Agent for GCC Ascend.
+Your role is to create employee relocation payment requests and submit them
+through the AGL (Agent Governance Layer) for approval.
 
 You MUST:
-1. Verify the Trust Receipt is valid and APPROVED
-2. Check the receipt hasn't been used before (one-time-use)
-3. Execute the payment only after both checks pass
-4. Never execute a payment without a valid Trust Receipt
+1. Validate the relocation amount is within policy limits ($10,000 max)
+2. Check your authority for the requested action
+3. Prepare the governance envelope for the AGL handshake
+4. Never approve payments yourself — only the Finance Agent can disburse
 
-Your DID: did:gcc:agent:finance-disbursement-02
-Allowed actions: finance.disburse.relocation
+Your DID: did:gcc:agent:hr-relocation-07
+Your owner: did:gcc:employee:global-mobility-director
+Allowed actions: relocation.case.create, relocation.disbursement.request
+Forbidden actions: finance.payment.approve, finance.payment.release
 """
 
 
-def _build_finance_llm() -> GenericFakeChatModel:
-    """Build a deterministic governance LLM for the Finance agent.
+def _build_hr_llm() -> GenericFakeChatModel:
+    """Build a deterministic governance LLM for the HR agent.
     In production, replace with ChatOpenAI / ChatAnthropic / etc."""
 
     def _responses() -> Iterator[BaseMessage]:
         while True:
             yield AIMessage(
-                content="Payment executed successfully after Trust Receipt verification."
+                content="Relocation request created and governance envelope prepared. "
+                        "Ready for AGL governance handshake."
             )
 
     return GenericFakeChatModel(messages=_responses())
 
 
 # ────────────────────────────────────────────────────────
-# Finance Disbursement Agent — LangChain + A2A SDK
+# HR Relocation Agent — LangChain + A2A SDK
 # ────────────────────────────────────────────────────────
 
-class FinanceDisbursementAgent(A2AAgentExecutor):
+class HRRelocationAgent(A2AAgentExecutor):
     """
-    LangChain-based Finance Disbursement Agent with A2A SDK compatibility.
+    LangChain-based HR Relocation Agent with A2A SDK compatibility.
 
-    Uses LangChain tools (verify_trust_receipt, execute_payment, check_duplicate_receipt)
-    for payment governance, while maintaining full backward compatibility with
-    the A2A SDK AgentExecutor interface and the AGL gateway direct execution path.
+    Uses LangChain tools and AgentExecutor for reasoning, while maintaining
+    full backward compatibility with the A2A SDK AgentExecutor interface
+    and the AGL governance envelope builder.
     """
 
-    ALLOWED_ACTIONS = ["finance.disburse.relocation"]
+    ALLOWED_ACTIONS = [
+        "relocation.case.create",
+        "relocation.disbursement.request",
+    ]
+    FORBIDDEN_ACTIONS = [
+        "finance.payment.approve",
+        "finance.payment.release",
+    ]
 
-    def __init__(self, agent_did: str = "did:gcc:agent:finance-disbursement-02"):
+    def __init__(
+        self,
+        agent_did: str = "did:gcc:agent:hr-relocation-07",
+        owner_human: str = "did:gcc:employee:global-mobility-director",
+    ):
         self.agent_did = agent_did
-        self.agent_name = "Finance Disbursement Agent"
-        self._executed_receipts: set[str] = _executed_receipts_store
+        self.owner_human = owner_human
+        self.agent_name = "HR Relocation Agent"
+        self.business_domain = "HR"
+        self.model_hash = hashlib.sha256(f"{agent_did}-model-config".encode()).hexdigest()
+        self.prompt_hash = hashlib.sha256(f"{agent_did}-system-prompt".encode()).hexdigest()
 
         # ── LangChain Agent Setup ──
         self.tools = [
-            verify_trust_receipt,
-            execute_payment,
-            check_duplicate_receipt,
+            create_relocation_case,
+            validate_relocation_amount,
+            check_agent_authority,
+            prepare_governance_envelope_data,
         ]
 
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", FINANCE_SYSTEM_PROMPT),
+            ("system", HR_SYSTEM_PROMPT),
             MessagesPlaceholder(variable_name="chat_history", optional=True),
             ("human", "{input}"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
-        self._llm = _build_finance_llm()
+        self._llm = _build_hr_llm()
 
-    def _run_tools_directly(self, trust_receipt_data: dict) -> dict:
+    def _run_tools_directly(self, user_input: str) -> dict:
         """
         Deterministic tool execution — runs governance tools in sequence.
-        Uses LangChain tools directly for Trust Receipt verification and payment.
+        This is the primary execution path: it uses LangChain tools but
+        drives them deterministically (no LLM needed for tool selection).
         """
         results = []
 
-        # Step 1: Verify Trust Receipt via LangChain tool
-        verify_result_str = verify_trust_receipt.invoke({
-            "receipt_json": json.dumps(trust_receipt_data),
-        })
-        results.append(f"verify_trust_receipt → {verify_result_str}")
-        verify_result = json.loads(verify_result_str)
+        # Parse amount from input
+        amount = 8000.0
+        for word in user_input.replace(",", "").replace("$", "").split():
+            try:
+                val = float(word)
+                if val > 0:
+                    amount = val
+                    break
+            except ValueError:
+                continue
 
-        if not verify_result.get("valid"):
-            return {
-                "output": f"Payment rejected: {verify_result.get('reason', 'Unknown')}",
-                "status": "REJECTED",
-                "reason": verify_result.get("reason", "Verification failed"),
-                "tool_results": results,
-            }
+        # Step 1: Validate amount via LangChain tool
+        val_result = validate_relocation_amount.invoke({"amount": amount})
+        results.append(f"validate_relocation_amount → {val_result}")
 
-        # Step 2: Execute payment via LangChain tool
-        payment_result_str = execute_payment.invoke({
-            "receipt_id": verify_result["receipt_id"],
-            "handshake_id": verify_result["handshake_id"],
-            "action": verify_result["action"],
-            "requester": verify_result["requester"],
+        # Step 2: Check authority via LangChain tool
+        auth_result = check_agent_authority.invoke({
+            "action": "relocation.disbursement.request",
+            "allowed_actions": ",".join(self.ALLOWED_ACTIONS),
+            "forbidden_actions": ",".join(self.FORBIDDEN_ACTIONS),
         })
-        results.append(f"execute_payment → {payment_result_str}")
-        payment_result = json.loads(payment_result_str)
+        results.append(f"check_agent_authority → {auth_result}")
+
+        # Step 3: Create case via LangChain tool
+        case_result = create_relocation_case.invoke({
+            "employee_case_ref": f"case-{uuid.uuid4().hex[:6]}",
+            "amount": amount,
+        })
+        results.append(f"create_relocation_case → {case_result}")
+
+        # Step 4: Prepare envelope via LangChain tool
+        env_result = prepare_governance_envelope_data.invoke({
+            "requester_did": self.agent_did,
+            "target_did": "did:gcc:agent:finance-disbursement-02",
+            "action": "finance.disburse.relocation",
+            "case_ref": f"case-{uuid.uuid4().hex[:6]}",
+            "amount": amount,
+        })
+        results.append(f"prepare_governance_envelope_data → {env_result}")
 
         return {
-            "output": f"Payment executed. ID: {payment_result['paymentId']}. "
-                      f"Trust Receipt: {verify_result['receipt_id']}. "
-                      f"LangChain tools: verify_trust_receipt, execute_payment.",
-            "status": "EXECUTED",
-            "payment": payment_result,
+            "input": user_input,
+            "output": (
+                f"Relocation request prepared (${amount:,.0f}). "
+                f"Governance envelope ready for AGL handshake. "
+                f"Agent: {self.agent_did}. "
+                f"LangChain tools executed: validate_relocation_amount, "
+                f"check_agent_authority, create_relocation_case, "
+                f"prepare_governance_envelope_data."
+            ),
             "tool_results": results,
         }
 
-    def invoke_langchain(self, trust_receipt_data: dict) -> dict:
+    def invoke_langchain(self, user_input: str, chat_history: list = None) -> dict:
         """
-        Run the LangChain agent for Trust Receipt verification and payment.
-        Returns dict with 'output', 'status', 'payment' keys.
+        Run the LangChain agent.
+        Uses deterministic tool execution to avoid LLM API dependency.
+        Returns the agent's output dict with 'output' key.
         """
-        return self._run_tools_directly(trust_receipt_data)
+        return self._run_tools_directly(user_input)
 
     # ── A2A SDK AgentExecutor interface ──
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """A2A SDK execute — delegates to LangChain agent internally."""
+        request = context.request
         task_id = context.task_id or str(uuid.uuid4())
         context_id = context.context_id or str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
 
         await event_queue.enqueue_event(
             TaskStatusUpdateEvent(
@@ -239,69 +271,42 @@ class FinanceDisbursementAgent(A2AAgentExecutor):
             )
         )
 
-        # Extract trust receipt from request metadata
-        request = context.request
-        trust_receipt_data = None
-        if request and request.message and request.message.metadata:
-            metadata_dict = dict(request.message.metadata)
-            agl = metadata_dict.get("agl", {})
-            if hasattr(agl, 'items'):
-                trust_receipt_data = dict(agl).get("trustReceipt")
+        user_text = ""
+        if request and request.message and request.message.parts:
+            for part in request.message.parts:
+                if part.text:
+                    user_text = part.text
+                    break
 
-        if not trust_receipt_data and request and hasattr(request, '_trust_receipt'):
-            trust_receipt_data = request._trust_receipt
+        # Run LangChain agent
+        lc_result = self.invoke_langchain(user_text)
+        agent_output = lc_result.get("output", "Request processed")
 
-        if not trust_receipt_data or not isinstance(trust_receipt_data, dict):
-            await event_queue.enqueue_event(
-                TaskStatusUpdateEvent(
-                    task_id=task_id,
-                    context_id=context_id,
-                    status=TaskStatus(
-                        state=TaskState.TASK_STATE_REJECTED,
-                        message=Message(
-                            role=Role.ROLE_AGENT,
-                            parts=[Part(text="No Trust Receipt found. Payment requires AGL governance approval.")],
-                        ),
-                    ),
-                    final=True,
-                )
-            )
-            return
+        response_data = {
+            "agent": self.agent_did,
+            "agentName": self.agent_name,
+            "framework": "langchain",
+            "businessDomain": self.business_domain,
+            "requestType": "relocation-disbursement",
+            "ownerHuman": self.owner_human,
+            "allowedActions": self.ALLOWED_ACTIONS,
+            "langchainTools": [t.name for t in self.tools],
+            "message": agent_output,
+            "status": "request_prepared",
+        }
 
-        # Run LangChain agent for Trust Receipt verification + payment
-        lc_result = self.invoke_langchain(trust_receipt_data)
-
-        if lc_result["status"] == "REJECTED":
-            await event_queue.enqueue_event(
-                TaskStatusUpdateEvent(
-                    task_id=task_id,
-                    context_id=context_id,
-                    status=TaskStatus(
-                        state=TaskState.TASK_STATE_REJECTED,
-                        message=Message(
-                            role=Role.ROLE_AGENT,
-                            parts=[Part(text=lc_result["output"])],
-                        ),
-                    ),
-                    final=True,
-                )
-            )
-            return
-
-        # Publish payment confirmation artifact
-        payment_data = lc_result.get("payment", {})
         metadata_struct = struct_pb2.Struct()
-        metadata_struct.update({**payment_data, "framework": "langchain"})
+        metadata_struct.update(response_data)
 
         await event_queue.enqueue_event(
             TaskArtifactUpdateEvent(
                 task_id=task_id,
                 context_id=context_id,
                 artifact=Artifact(
-                    name="payment-confirmation",
+                    name="hr-relocation-request",
                     parts=[
                         Part(
-                            text=lc_result["output"],
+                            text=f"Relocation request prepared by {self.agent_name} (LangChain): {agent_output}",
                             metadata=metadata_struct,
                         )
                     ],
@@ -317,7 +322,7 @@ class FinanceDisbursementAgent(A2AAgentExecutor):
                     state=TaskState.TASK_STATE_COMPLETED,
                     message=Message(
                         role=Role.ROLE_AGENT,
-                        parts=[Part(text=lc_result["output"])],
+                        parts=[Part(text=agent_output)],
                     ),
                 ),
                 final=True,
@@ -337,71 +342,26 @@ class FinanceDisbursementAgent(A2AAgentExecutor):
             )
         )
 
-    # ── Legacy execute for AGL gateway direct calls ──
-
-    async def execute_direct(self, request: dict) -> dict:
-        """Direct execution for the AGL gateway (non-A2A-SDK path).
-        Delegates to LangChain tools internally."""
-        now = datetime.now(timezone.utc).isoformat()
-        task_id = f"task-{uuid.uuid4().hex[:8]}"
-
-        metadata = request.get("message", {}).get("metadata", {})
-        agl = metadata.get("agl", {})
-        trust_receipt_data = agl.get("trustReceipt")
-
-        if not trust_receipt_data:
-            return {"taskId": task_id, "status": "TASK_STATE_REJECTED",
-                    "reason": "No Trust Receipt found.", "timestamp": now}
-
-        # Use LangChain agent for verification + execution
-        lc_result = self.invoke_langchain(trust_receipt_data)
-
-        if lc_result["status"] == "REJECTED":
-            return {"taskId": task_id, "status": "TASK_STATE_REJECTED",
-                    "reason": lc_result.get("reason", lc_result["output"]), "timestamp": now}
-
-        payment = lc_result.get("payment", {})
-        message_parts = request.get("message", {}).get("parts", [])
-        request_text = " ".join(p.get("text", "") for p in message_parts)
-
-        return {
-            "taskId": task_id,
-            "status": "TASK_STATE_COMPLETED",
-            "timestamp": now,
-            "framework": "langchain",
-            "artifacts": [{
-                "name": "payment-confirmation",
-                "parts": [{"type": "application/json", "data": {
-                    **payment,
-                    "description": request_text,
-                    "langchainTools": ["verify_trust_receipt", "execute_payment"],
-                }}],
-            }],
-            "history": [{"role": "agent", "parts": [
-                {"text": lc_result["output"]}
-            ]}],
-        }
-
     # ── Agent Card ──
 
     @staticmethod
     def get_agent_card(host: str = "localhost", port: int = 8000) -> AgentCard:
-        """Return A2A Agent Card with AGL extension."""
+        """Return the A2A Agent Card with AGL governance extension."""
         agl_params = struct_pb2.Struct()
         agl_params.update({
-            "poaQuorum": "3-of-5",
+            "poaQuorum": "2-of-3",
             "revocationSlaMs": 1000,
             "zkpRequired": True,
             "framework": "langchain",
         })
 
         return AgentCard(
-            name="Finance Disbursement Agent",
-            description="LangChain-based agent that executes approved employee relocation payments after AGL trust validation",
+            name="HR Relocation Agent",
+            description="LangChain-based agent that creates employee relocation payment requests with AGL governance",
             version="1.0.0",
             supported_interfaces=[
                 AgentInterface(
-                    url=f"http://{host}:{port}/a2a/finance",
+                    url=f"http://{host}:{port}/a2a/hr",
                     protocol_binding="jsonrpc/http",
                 ),
             ],
@@ -418,17 +378,84 @@ class FinanceDisbursementAgent(A2AAgentExecutor):
             ),
             skills=[
                 AgentSkill(
-                    id="release-relocation-payment",
-                    name="Release Relocation Payment",
-                    description="Disburses relocation support after AGL trust validation",
-                    tags=["finance", "relocation", "payment", "langchain"],
+                    id="request-relocation-disbursement",
+                    name="Request Relocation Disbursement",
+                    description="Submits a relocation payment request to Finance Agent via AGL governance",
+                    tags=["hr", "relocation", "payment-request", "langchain"],
                 ),
             ],
-            default_input_modes=["application/json"],
-            default_output_modes=["application/json"],
+            default_input_modes=["application/json", "text/plain"],
+            default_output_modes=["application/json", "text/plain"],
         )
+
+    # ── Governance Envelope Builder (backward-compatible) ──
+
+    def create_relocation_request(
+        self,
+        employee_case_ref: str,
+        amount: float,
+        currency: str = "USD",
+        description: str = "",
+    ) -> dict:
+        """Create a relocation request — runs LangChain tools for validation."""
+        val_result = validate_relocation_amount.invoke({"amount": amount})
+        validation = json.loads(val_result)
+
+        return {
+            "request_data": {
+                "type": "relocation-disbursement",
+                "employeeCaseRef": employee_case_ref,
+                "amount": amount,
+                "currency": currency,
+                "description": description or f"Relocation disbursement for case {employee_case_ref}",
+                "validation": validation,
+            },
+            "amount": amount,
+            "case_ref": employee_case_ref,
+            "description": description,
+        }
+
+    def prepare_governed_request(
+        self,
+        amount: float,
+        case_ref: str,
+        description: str,
+        vc_jwt: str,
+        delegation_proof: DelegationProof,
+        policy_proofs: list[PolicyProof],
+        risk_signals: Optional[RiskSignals] = None,
+        target_did: str = "did:gcc:agent:finance-disbursement-02",
+    ) -> dict:
+        """Build the full A2A message WITH governance envelope in metadata."""
+        if risk_signals is None:
+            risk_signals = RiskSignals(
+                agent_model_hash=self.model_hash,
+                prompt_template_hash=self.prompt_hash,
+                risk_score=0.0,
+            )
+
+        envelope = build_governance_envelope(
+            requester_did=self.agent_did,
+            requester_vc=vc_jwt,
+            target_did=target_did,
+            skill_id="release-relocation-payment",
+            action="finance.disburse.relocation",
+            business_case_ref=case_ref,
+            originating_human=self.owner_human,
+            delegation_proof=delegation_proof,
+            policy_proofs=policy_proofs,
+            risk_signals=risk_signals,
+        )
+
+        text = (
+            f"Request relocation disbursement for case {case_ref}. "
+            f"{description}" if description else
+            f"Request relocation disbursement for case {case_ref}."
+        )
+
+        return build_a2a_message(text=text, envelope=envelope)
 
 
 # Backward-compatible alias
-FinanceDisbursementAgentExecutor = FinanceDisbursementAgent
+HRRelocationAgentExecutor = HRRelocationAgent
 
