@@ -10,6 +10,7 @@ Prevents:
   • Trust Receipt replay (one-time-use enforcement at protocol level)
 """
 
+import hashlib
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -113,8 +114,7 @@ class ReplayGuard:
                         pass
 
             # 3. Check envelope hash uniqueness (prevent content-identical replays)
-            import hashlib
-            envelope_str = f"{nonce}:{handshake_id}:{envelope.get('requester', {}).get('agentDid', '')}"
+            envelope_str = f"{nonce}:{handshake_id}:{envelope.get('requester', {}).get('agentDid', '')}:{envelope.get('target', {}).get('agentDid', '')}:{envelope.get('intent', {}).get('action', '')}:{envelope.get('expiresAt', '')}"
             envelope_hash = hashlib.sha256(envelope_str.encode()).hexdigest()
 
             if envelope_hash in self._envelope_hash_cache:
@@ -174,15 +174,19 @@ class ReplayGuard:
         # Evict old receipt IDs
         while self._receipt_cache and len(self._receipt_cache) > self._max_cache:
             self._receipt_cache.popitem(last=False)
+        expired_receipts = [k for k, v in self._receipt_cache.items() if v < cutoff]
+        for k in expired_receipts:
+            del self._receipt_cache[k]
 
     def get_stats(self) -> dict:
-        return {
-            "total_checks": self._total_checks,
-            "replay_attempts_blocked": self._replay_attempts,
-            "nonce_cache_size": len(self._nonce_cache),
-            "receipt_cache_size": len(self._receipt_cache),
-            "envelope_hash_cache_size": len(self._envelope_hash_cache),
-        }
+        with self._lock:
+            return {
+                "total_checks": self._total_checks,
+                "replay_attempts_blocked": self._replay_attempts,
+                "nonce_cache_size": len(self._nonce_cache),
+                "receipt_cache_size": len(self._receipt_cache),
+                "envelope_hash_cache_size": len(self._envelope_hash_cache),
+            }
 
     def reset(self):
         """Clear all caches."""

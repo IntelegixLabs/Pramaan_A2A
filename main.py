@@ -8,6 +8,7 @@ A2A enables agents to talk. HandshakeOS decides whether they should trust and ob
 Main application server — FastAPI with AGL Gateway, agents, and all governance services.
 """
 
+import os
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -184,7 +185,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8200"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1736,4 +1737,4 @@ async def toggle_security_feature(body: dict):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8200, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8200")), reload=True)

@@ -107,7 +107,8 @@ def authority_intersection_check(
 
     # 5. Segregation of duties: requester should not approve own requests
     requester_did = subject.get("id", "")
-    if "approve" in requested_action and requester_did == subject.get("id"):
+    approver_target = subject.get("approvalTarget", "")
+    if "approve" in requested_action and requester_did and requester_did == approver_target:
         return {"decision": "DENY", "reason": "Segregation-of-duties violation: cannot self-approve"}
 
     return {"decision": "ALLOW", "reason": "Authority intersection check passed"}
@@ -335,7 +336,7 @@ class AGLGateway:
             requester_vc_claims=identity_result.claims,
             target_skill_id=skill_id,
             requested_action=action,
-            risk_state="NORMAL",
+            risk_state="CRITICAL" if self.circuit_breaker.is_quarantined(requester_did) else "NORMAL",
         )
         if authz_result["decision"] == "DENY":
             self._audit_log(
@@ -362,7 +363,16 @@ class AGLGateway:
 
         # Step 8: Detect rogue intent
         # Record the request for tracking
-        self.intent_sentinel.record_request(requester_did, target_did)
+        # Extract amount from intent for threshold-hugging detection
+        intent_amount = None
+        try:
+            sealed = envelope.get("policyProofs", [{}])[0].get("publicInputs", {})
+            intent_amount = sealed.get("amount") or sealed.get("value")
+            if intent_amount is not None:
+                intent_amount = float(intent_amount)
+        except (IndexError, ValueError, TypeError):
+            pass
+        self.intent_sentinel.record_request(requester_did, target_did, amount=intent_amount)
         risk_score = self.intent_sentinel.score(request, envelope)
 
         # ── NEW S5: Anomaly Detection ──
