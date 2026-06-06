@@ -3,20 +3,25 @@ HandshakeOS - Finance Disbursement Agent (LangChain Framework)
 LangChain-based agent with governance-aware tools for executing payments.
 Executes payments ONLY with a valid Trust Receipt from the AGL Gateway.
 
-Uses LangChain's tool-calling pattern with a deterministic governance
-LLM (no API key required) — swap in any ChatModel for production use.
+Uses LLM factory to auto-detect API keys and use a real LLM when available,
+falling back to deterministic tool execution when no key is configured.
 """
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Iterator
 
 from langchain_core.tools import tool
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.prebuilt import create_react_agent
+
+from llm_factory import build_llm, get_llm_info, is_live
+
+logger = logging.getLogger(__name__)
 
 from a2a.server.agent_execution import AgentExecutor as A2AAgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -108,7 +113,7 @@ def check_duplicate_receipt(receipt_id: str) -> str:
 
 
 # ────────────────────────────────────────────────────────
-# Governance-aware deterministic LLM
+# Governance-aware LLM (auto-detected from env)
 # ────────────────────────────────────────────────────────
 
 FINANCE_SYSTEM_PROMPT = """You are the Finance Disbursement Agent for GCC Ascend.
@@ -125,19 +130,6 @@ Allowed actions: finance.disburse.relocation
 """
 
 
-def _build_finance_llm() -> GenericFakeChatModel:
-    """Build a deterministic governance LLM for the Finance agent.
-    In production, replace with ChatOpenAI / ChatAnthropic / etc."""
-
-    def _responses() -> Iterator[BaseMessage]:
-        while True:
-            yield AIMessage(
-                content="Payment executed successfully after Trust Receipt verification."
-            )
-
-    return GenericFakeChatModel(messages=_responses())
-
-
 # ────────────────────────────────────────────────────────
 # Finance Disbursement Agent — LangChain + A2A SDK
 # ────────────────────────────────────────────────────────
@@ -147,8 +139,9 @@ class FinanceDisbursementAgent(A2AAgentExecutor):
     LangChain-based Finance Disbursement Agent with A2A SDK compatibility.
 
     Uses LangChain tools (verify_trust_receipt, execute_payment, check_duplicate_receipt)
-    for payment governance, while maintaining full backward compatibility with
-    the A2A SDK AgentExecutor interface and the AGL gateway direct execution path.
+    for payment governance. When a live LLM is configured (via API key env vars),
+    uses real LLM reasoning via create_react_agent. Otherwise falls back to
+    deterministic tool execution.
     """
 
     ALLOWED_ACTIONS = ["finance.disburse.relocation"]
@@ -172,7 +165,10 @@ class FinanceDisbursementAgent(A2AAgentExecutor):
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
-        self._llm = _build_finance_llm()
+        # Use the LLM factory — auto-detects API keys
+        self._llm = build_llm()
+        self._llm_info = get_llm_info()
+        logger.info(f"Finance Agent LLM: {self._llm_info.mode} ({self._llm_info.provider})")
 
     def _run_tools_directly(self, trust_receipt_data: dict) -> dict:
         """
@@ -215,12 +211,88 @@ class FinanceDisbursementAgent(A2AAgentExecutor):
             "tool_results": results,
         }
 
+    @property
+    def llm_mode(self) -> str:
+        """Return 'live' or 'mock'."""
+        return self._llm_info.mode
+
+    @property
+    def llm_provider(self) -> str:
+        """Return the LLM provider name."""
+        return self._llm_info.provider
+
     def invoke_langchain(self, trust_receipt_data: dict) -> dict:
         """
         Run the LangChain agent for Trust Receipt verification and payment.
-        Returns dict with 'output', 'status', 'payment' keys.
+        When a live LLM is available, uses real LLM reasoning via create_react_agent.
+        Otherwise falls back to deterministic tool execution.
         """
+        if is_live():
+            return self._run_with_live_llm(trust_receipt_data)
         return self._run_tools_directly(trust_receipt_data)
+
+    def _run_with_live_llm(self, trust_receipt_data: dict) -> dict:
+        """
+        Use the real LLM with create_react_agent for intelligent tool selection.
+        The LLM decides which tools to call and in what order.
+        """
+        try:
+            agent = create_react_agent(self._llm, self.tools)
+            result = agent.invoke({
+                "messages": [
+                    HumanMessage(content=(
+                        f"{FINANCE_SYSTEM_PROMPT}\n\n"
+                        f"Process this Trust Receipt and execute the payment if valid:\n"
+                        f"{json.dumps(trust_receipt_data, indent=2)}"
+                    ))
+                ]
+            })
+            # Extract the final message from the agent
+            messages = result.get("messages", [])
+            final_msg = messages[-1].content if messages else "Payment processed via live LLM."
+
+            # Check if payment was executed by looking at tool results
+            payment_data = None
+            for msg in messages:
+                if hasattr(msg, 'content') and isinstance(msg.content, str):
+                    try:
+                        parsed = json.loads(msg.content)
+                        if parsed.get("paymentId"):
+                            payment_data = parsed
+                        elif parsed.get("valid") is False:
+                            return {
+                                "output": f"Payment rejected: {parsed.get('reason', 'Unknown')}",
+                                "status": "REJECTED",
+                                "reason": parsed.get("reason", "Verification failed"),
+                                "tool_results": [str(msg.content) for msg in messages],
+                                "llm_mode": "live",
+                            }
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+            if payment_data:
+                return {
+                    "output": f"Payment executed via live LLM. ID: {payment_data['paymentId']}. "
+                              f"Trust Receipt verified and payment confirmed.",
+                    "status": "EXECUTED",
+                    "payment": payment_data,
+                    "tool_results": [str(msg.content) for msg in messages],
+                    "llm_mode": "live",
+                }
+
+            return {
+                "output": final_msg,
+                "status": "EXECUTED",
+                "payment": {},
+                "tool_results": [str(msg.content) for msg in messages],
+                "llm_mode": "live",
+            }
+
+        except Exception as e:
+            logger.warning(f"Live LLM failed, falling back to deterministic: {e}")
+            result = self._run_tools_directly(trust_receipt_data)
+            result["llm_mode"] = "mock (fallback)"
+            return result
 
     # ── A2A SDK AgentExecutor interface ──
 

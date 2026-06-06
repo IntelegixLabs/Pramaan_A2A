@@ -701,13 +701,25 @@ async def agui_status():
         revocation_cache, circuit_breaker, delegation_ledger,
         policy_engine, intent_sentinel, hr_agent, finance_agent,
     )
+    from llm_factory import get_llm_info
+
+    llm_info = get_llm_info()
+
     return {
+        "llm": {
+            "mode": llm_info.mode,
+            "provider": llm_info.provider,
+            "model": llm_info.model,
+            "detail": llm_info.detail,
+        },
         "agents": [
             {
                 "id": "hr-relocation-07",
                 "did": hr_agent.agent_did,
                 "name": "HR Relocation Agent",
                 "domain": "HR",
+                "llm_mode": hr_agent.llm_mode,
+                "llm_provider": hr_agent.llm_provider,
                 "status": "quarantined" if circuit_breaker.is_quarantined(hr_agent.agent_did) else
                           "revoked" if revocation_cache.is_revoked(hr_agent.agent_did) else "active",
             },
@@ -716,6 +728,8 @@ async def agui_status():
                 "did": "did:gcc:agent:finance-disbursement-02",
                 "name": "Finance Disbursement Agent",
                 "domain": "Finance",
+                "llm_mode": finance_agent.llm_mode,
+                "llm_provider": finance_agent.llm_provider,
                 "status": "quarantined" if circuit_breaker.is_quarantined("did:gcc:agent:finance-disbursement-02") else
                           "revoked" if revocation_cache.is_revoked("did:gcc:agent:finance-disbursement-02") else "active",
             },
