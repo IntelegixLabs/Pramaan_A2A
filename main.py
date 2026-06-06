@@ -1429,8 +1429,14 @@ async def scan_agent(body: dict):
             "errors": errors_log,
         }
 
-    # Run the vulnerability analysis
-    report = _analyze_agent_card(card, used_url, fetch_time_ms)
+    # 1. Run the base static vulnerability analysis
+    base_report = _analyze_agent_card(card, used_url, fetch_time_ms)
+    
+    # 2. Run the dynamic Red Team Agent (Pramaan Sentinel)
+    from agents.security_scanner_agent import SecurityScannerAgent
+    scanner = SecurityScannerAgent()
+    report = scanner.scan(used_url, card, base_report)
+        
     report["raw_card"] = card  # Include raw card for reference
 
     # Log the scan in audit
