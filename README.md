@@ -2,6 +2,8 @@
 
 **A Proof-of-Authority Governance Extension for Agent-to-Agent Trust**
 
+> AI agents are no longer just chatbots. They browse the web, call APIs, manage infrastructure, and talk to each other autonomously.
+
 > A2A enables agents to talk. HandshakeOS decide whether they should trust and obey each other.
 
 > **Security in the Agentic Future** : AI agents are powerful but they're also new attack surfaces. HandshakeOS provides monitoring frameworks, defense mechanisms, and trust architectures that keep agentic systems safe from prompt injection, identity spoofing, unauthorized access, and adversarial misuse.
