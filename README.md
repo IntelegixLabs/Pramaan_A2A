@@ -18,6 +18,7 @@ Built with **LangChain**, **A2A SDK**, **AG-UI Protocol**, **FastAPI**, and **Re
 - [Security Architecture : 16 Defense Layers](#security-architecture--16-defense-layers)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
+- [Application Screenshots](#application-screenshots)
 - [License](#license)
 
 ---
@@ -56,24 +57,24 @@ This converts A2A from a communication protocol into a **governed trust fabric**
 
 ## Architecture
 
-```
-                        Human Admin Console
-                                 |
-                                 v
-                     Delegation + Revocation Service
-                                 |
-                                 v
-+----------------+        +--------------------+        +------------------+
-| HR Agent       | -----> | AGL Sidecar/Gateway| -----> | Finance Agent    |
-| (LangChain)    | A2A    | HandshakeOS Layer  | A2A    | (LangChain)      |
-+----------------+        +--------------------+        +------------------+
-        |                        |                              |
-        v                        v                              v
-  AG-UI Dashboard        PoA Validator Quorum          Trust Receipt Ledger
-  (React + SSE)    Identity+Delegation+Policy+Risk
+```text
+                               Human Admin Console
+                                        |
+                                        v
+                            Delegation + Revocation Service
+                                        |
+                                        v
+       +----------------+        +--------------------+        +------------------+
+       | HR Agent       | -----> | AGL Sidecar/Gateway| -----> | Finance Agent    |
+       | (LangChain)    | A2A    | HandshakeOS Layer  | A2A    | (LangChain)      |
+       +----------------+        +--------------------+        +------------------+
+               |                        |                              |
+               v                        v                              v
+         AG-UI Dashboard        PoA Validator Quorum          Trust Receipt Ledger
+         (React + SSE)    Identity+Delegation+Policy+Risk
 
                   ┌─────────────────────────────────┐
-                  │    6 Advanced Security Modules   │
+                  │    6 Advanced Security Modules  │
                   ├─────────────────────────────────┤
                   │ Audit Logger (hash-chained)     │
                   │ Rate Limiter (per-agent + IP)   │
@@ -82,6 +83,23 @@ This converts A2A from a communication protocol into a **governed trust fabric**
                   │ Anomaly Detector (behavioral)   │
                   │ Honeypot / Canary (deception)   │
                   └─────────────────────────────────┘
+
+                  ===================================
+                  |   Pramaan Sentinel (Scanners)   |
+                  ===================================
+                         /                   \
+                        v                     v
+            ┌────────────────────┐   ┌────────────────────┐
+            │ MCP Security       │   │ A2A Agent          │
+            │ Scanner (Agent)    │   │ Scanner (Agent)    │
+            ├────────────────────┤   ├────────────────────┤
+            │ • Discovery Engine │   │ • Config Validator │
+            │ • Red Team Fuzzer  │   │ • Policy Checker   │
+            │ • Scoring Matrix   │   │ • Trust Profiling  │
+            └─────────┬──────────┘   └─────────┬──────────┘
+                      |                        |
+                      v                        v
+            [External MCP Server]     [Internal A2A Agent]
 ```
 
 
@@ -158,6 +176,20 @@ npm run dev
 ```bash
 python test_smoke.py
 ```
+
+## Application Screenshots
+
+
+<br />
+<p align="center">
+  <img src="docs/screenshots/1.png" width="400"/>
+  <img src="docs/screenshots/2.png" width="400"/>
+  <img src="docs/screenshots/3.png" width="400"/>
+  <img src="docs/screenshots/4.png" width="400"/>
+  <img src="docs/screenshots/5.png" width="400"/>
+  <img src="docs/screenshots/6.png" width="400"/>
+</p>
+<br />
 
 
 ## License
