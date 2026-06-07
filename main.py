@@ -1451,6 +1451,31 @@ async def scan_agent(body: dict):
     return report
 
 
+@app.post("/security/scan-mcp")
+async def scan_mcp_server(body: dict):
+    """
+    Run simulated security scan against an MCP SSE endpoint.
+    Body: { "mcp_url": "http://localhost:8000/sse" }
+    """
+    mcp_url = body.get("mcp_url")
+    if not mcp_url:
+        return {"error": "mcp_url is required"}
+        
+    from agents.mcp_security_scanner import MCPSecurityScannerAgent
+    scanner = MCPSecurityScannerAgent()
+    report = scanner.scan(mcp_url)
+    
+    audit_logger.log(
+        category=AuditCategory.GOVERNANCE,
+        severity=AuditSeverity.INFO,
+        action="scanned_mcp_server",
+        agent_did=mcp_url,
+        details={"score": report['security_score'], "grade": report['grade']}
+    )
+    
+    return report
+
+
 @app.post("/security/scan-agent-card")
 async def scan_agent_card_direct(body: dict):
     """

@@ -78,12 +78,36 @@ class SecurityScannerAgent:
         if final_score < 60: grade = "D"
         if final_score < 40: grade = "F"
         
+        # Build Score Analysis breakdown
+        score_analysis = {
+            "base_score": 100,
+            "deductions": {
+                "critical": {"count": summary["critical"], "penalty": 25, "total": summary["critical"] * 25},
+                "high": {"count": summary["high"], "penalty": 15, "total": summary["high"] * 15},
+                "medium": {"count": summary["medium"], "penalty": 5, "total": summary["medium"] * 5},
+                "low": {"count": summary["low"], "penalty": 2, "total": summary["low"] * 2},
+            },
+            "total_deductions": deductions,
+            "final_score": final_score
+        }
+        
+        # Calculate Agent Security Dimensions
+        agent_scores = {
+            "identity_auth": max(0, 100 - (summary["critical"] * 10) - (summary["high"] * 5)),
+            "governance_policy": max(0, 100 - (summary["critical"] * 8) - (summary["medium"] * 5)),
+            "prompt_resilience": max(0, 100 - (summary["high"] * 10) - (summary["medium"] * 2)),
+            "privilege_routing": max(0, 100 - (summary["critical"] * 5) - (summary["medium"] * 5)),
+            "threat_mitigation": max(0, 100 - (summary["critical"] * 8) - (summary["low"] * 2)),
+        }
+        
         # Update the base report
         base_report["findings"] = base_findings
         base_report["red_team_findings"] = dynamic_findings
         base_report["security_score"] = final_score
         base_report["grade"] = grade
         base_report["summary"] = summary
+        base_report["score_analysis"] = score_analysis
+        base_report["agent_scores"] = agent_scores
         
         return base_report
         
