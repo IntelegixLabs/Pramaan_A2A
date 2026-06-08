@@ -77,6 +77,7 @@ class AuditLogger:
         self._lock = Lock()
         self._max_events = max_events
         self._previous_hash = "genesis"
+        self._chain_start_hash = "genesis"
         self._subscribers: list[Callable] = []
         # Per-agent event counters for quick stats
         self._agent_event_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
@@ -131,19 +132,25 @@ class AuditLogger:
             # Evict oldest if over limit
             if len(self._events) > self._max_events:
                 self._events = self._events[-self._max_events:]
+                if self._events:
+                    self._chain_start_hash = self._events[0].previous_hash
 
-            # Notify subscribers
-            for cb in self._subscribers:
-                try:
-                    cb(event)
-                except Exception:
-                    pass
+            # Copy subscriber list while under lock
+            subscribers = list(self._subscribers)
 
-            return event
+        # Notify subscribers (outside lock to prevent deadlocks)
+        for cb in subscribers:
+            try:
+                cb(event)
+            except Exception:
+                pass
+
+        return event
 
     def subscribe(self, callback: Callable):
         """Subscribe to audit events in real-time."""
-        self._subscribers.append(callback)
+        with self._lock:
+            self._subscribers.append(callback)
 
     def get_events(
         self,
@@ -201,7 +208,7 @@ class AuditLogger:
         if not self._events:
             return {"valid": True, "checked": 0}
 
-        prev_hash = "genesis"
+        prev_hash = self._chain_start_hash
         for i, event in enumerate(self._events):
             if event.previous_hash != prev_hash:
                 return {

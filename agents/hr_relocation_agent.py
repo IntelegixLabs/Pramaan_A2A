@@ -3,12 +3,13 @@ HandshakeOS - HR Relocation Agent (LangChain Framework)
 LangChain-based agent with governance-aware tools for creating relocation
 payment requests and building AGL governance envelopes.
 
-Uses LangChain's tool-calling agent pattern with a deterministic governance
-LLM (no API key required) — swap in any ChatModel for production use.
+Uses LLM factory to auto-detect API keys and use a real LLM when available,
+falling back to deterministic tool execution when no key is configured.
 """
 
 import hashlib
 import json
+import logging
 import uuid
 from typing import Optional, Any, Iterator
 
@@ -17,6 +18,10 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.prebuilt import create_react_agent
+
+from llm_factory import build_llm, get_llm_info, is_live
+
+logger = logging.getLogger(__name__)
 
 from a2a.server.agent_execution import AgentExecutor as A2AAgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -100,7 +105,7 @@ def prepare_governance_envelope_data(
 
 
 # ────────────────────────────────────────────────────────
-# Governance-aware deterministic LLM
+# Governance-aware LLM (auto-detected from env)
 # ────────────────────────────────────────────────────────
 
 HR_SYSTEM_PROMPT = """You are the HR Relocation Agent for GCC Ascend.
@@ -120,20 +125,6 @@ Forbidden actions: finance.payment.approve, finance.payment.release
 """
 
 
-def _build_hr_llm() -> GenericFakeChatModel:
-    """Build a deterministic governance LLM for the HR agent.
-    In production, replace with ChatOpenAI / ChatAnthropic / etc."""
-
-    def _responses() -> Iterator[BaseMessage]:
-        while True:
-            yield AIMessage(
-                content="Relocation request created and governance envelope prepared. "
-                        "Ready for AGL governance handshake."
-            )
-
-    return GenericFakeChatModel(messages=_responses())
-
-
 # ────────────────────────────────────────────────────────
 # HR Relocation Agent — LangChain + A2A SDK
 # ────────────────────────────────────────────────────────
@@ -142,9 +133,9 @@ class HRRelocationAgent(A2AAgentExecutor):
     """
     LangChain-based HR Relocation Agent with A2A SDK compatibility.
 
-    Uses LangChain tools and AgentExecutor for reasoning, while maintaining
-    full backward compatibility with the A2A SDK AgentExecutor interface
-    and the AGL governance envelope builder.
+    Uses LangChain tools and AgentExecutor for reasoning. When a live LLM
+    is configured (via API key env vars), uses real LLM reasoning via
+    create_react_agent. Otherwise falls back to deterministic tool execution.
     """
 
     ALLOWED_ACTIONS = [
@@ -183,7 +174,10 @@ class HRRelocationAgent(A2AAgentExecutor):
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
-        self._llm = _build_hr_llm()
+        # Use the LLM factory — auto-detects API keys
+        self._llm = build_llm()
+        self._llm_info = get_llm_info()
+        logger.info(f"HR Agent LLM: {self._llm_info.mode} ({self._llm_info.provider})")
 
     def _run_tools_directly(self, user_input: str) -> dict:
         """
@@ -246,13 +240,54 @@ class HRRelocationAgent(A2AAgentExecutor):
             "tool_results": results,
         }
 
+    @property
+    def llm_mode(self) -> str:
+        """Return 'live' or 'mock'."""
+        return self._llm_info.mode
+
+    @property
+    def llm_provider(self) -> str:
+        """Return the LLM provider name."""
+        return self._llm_info.provider
+
     def invoke_langchain(self, user_input: str, chat_history: list = None) -> dict:
         """
         Run the LangChain agent.
-        Uses deterministic tool execution to avoid LLM API dependency.
-        Returns the agent's output dict with 'output' key.
+        When a live LLM is available, uses real LLM reasoning via create_react_agent.
+        Otherwise falls back to deterministic tool execution.
         """
+        if is_live():
+            return self._run_with_live_llm(user_input)
         return self._run_tools_directly(user_input)
+
+    def _run_with_live_llm(self, user_input: str) -> dict:
+        """
+        Use the real LLM with create_react_agent for intelligent tool selection.
+        """
+        try:
+            agent = create_react_agent(self._llm, self.tools)
+            result = agent.invoke({
+                "messages": [
+                    HumanMessage(content=(
+                        f"{HR_SYSTEM_PROMPT}\n\n"
+                        f"Process this relocation request:\n{user_input}"
+                    ))
+                ]
+            })
+            messages = result.get("messages", [])
+            final_msg = messages[-1].content if messages else "Relocation request processed via live LLM."
+
+            return {
+                "input": user_input,
+                "output": final_msg,
+                "tool_results": [str(msg.content) for msg in messages],
+                "llm_mode": "live",
+            }
+        except Exception as e:
+            logger.warning(f"Live LLM failed, falling back to deterministic: {e}")
+            result = self._run_tools_directly(user_input)
+            result["llm_mode"] = "mock (fallback)"
+            return result
 
     # ── A2A SDK AgentExecutor interface ──
 

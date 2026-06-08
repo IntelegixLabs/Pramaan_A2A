@@ -8,6 +8,7 @@ A2A enables agents to talk. HandshakeOS decides whether they should trust and ob
 Main application server — FastAPI with AGL Gateway, agents, and all governance services.
 """
 
+import os
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -184,7 +185,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8200"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1428,8 +1429,14 @@ async def scan_agent(body: dict):
             "errors": errors_log,
         }
 
-    # Run the vulnerability analysis
-    report = _analyze_agent_card(card, used_url, fetch_time_ms)
+    # 1. Run the base static vulnerability analysis
+    base_report = _analyze_agent_card(card, used_url, fetch_time_ms)
+
+    # 2. Run the dynamic Red Team Agent (Pramaan Sentinel)
+    from agents.security_scanner_agent import SecurityScannerAgent
+    scanner = SecurityScannerAgent()
+    report = scanner.scan(used_url, card, base_report)
+
     report["raw_card"] = card  # Include raw card for reference
 
     # Log the scan in audit
@@ -1439,6 +1446,31 @@ async def scan_agent(body: dict):
         action="scanned_external_agent",
         agent_did=agent_url,
         details={"score": report['security_score'], "grade": report['grade'], "findings": report['summary']['total_findings']},
+    )
+
+    return report
+
+
+@app.post("/security/scan-mcp")
+async def scan_mcp_server(body: dict):
+    """
+    Run simulated security scan against an MCP SSE endpoint.
+    Body: { "mcp_url": "http://localhost:8000/sse" }
+    """
+    mcp_url = body.get("mcp_url")
+    if not mcp_url:
+        return {"error": "mcp_url is required"}
+
+    from agents.mcp_security_scanner import MCPSecurityScannerAgent
+    scanner = MCPSecurityScannerAgent()
+    report = scanner.scan(mcp_url)
+
+    audit_logger.log(
+        category=AuditCategory.GOVERNANCE,
+        severity=AuditSeverity.INFO,
+        action="scanned_mcp_server",
+        agent_did=mcp_url,
+        details={"score": report['security_score'], "grade": report['grade']}
     )
 
     return report
@@ -1736,4 +1768,4 @@ async def toggle_security_feature(body: dict):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8200")), reload=True)

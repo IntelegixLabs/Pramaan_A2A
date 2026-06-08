@@ -117,31 +117,36 @@ class RateLimiter:
                     penalty_level="block",
                 )
 
-            minute_count = self._agent_minute_windows[agent_did].record()
-            hour_count = self._agent_hour_windows[agent_did].record()
+            # Check counts first without recording (to avoid inflating counts for blocked requests)
+            minute_count = self._agent_minute_windows[agent_did].count()
+            hour_count = self._agent_hour_windows[agent_did].count()
 
-            # Check minute limit
-            minute_ratio = minute_count / self._agent_minute_limit
-            hour_ratio = hour_count / self._agent_hour_limit
+            # Include the pending request in the ratio calculation
+            minute_ratio = (minute_count + 1) / self._agent_minute_limit
+            hour_ratio = (hour_count + 1) / self._agent_hour_limit
 
             worst_ratio = max(minute_ratio, hour_ratio)
-            remaining_minute = max(0, self._agent_minute_limit - minute_count)
+            remaining_minute = max(0, self._agent_minute_limit - minute_count - 1)
 
             if worst_ratio >= self._block_ratio:
-                # Block and apply penalty
+                # Block and apply penalty — do NOT record
                 self._blocked_until[f"agent:{agent_did}"] = time.time() + self._penalty_duration
                 return RateLimitResult(
                     allowed=False,
-                    reason=f"Agent rate limit exceeded ({minute_count}/min, {hour_count}/hr). Penalty applied.",
+                    reason=f"Agent rate limit exceeded ({minute_count + 1}/min, {hour_count + 1}/hr). Penalty applied.",
                     remaining=0,
                     retry_after_seconds=self._penalty_duration,
                     penalty_level="block",
                 )
 
+            # Record the request only for allowed requests
+            self._agent_minute_windows[agent_did].record()
+            self._agent_hour_windows[agent_did].record()
+
             if worst_ratio >= 1.0:
                 return RateLimitResult(
                     allowed=True,
-                    reason=f"Agent approaching rate limit ({minute_count}/{self._agent_minute_limit}/min)",
+                    reason=f"Agent approaching rate limit ({minute_count + 1}/{self._agent_minute_limit}/min)",
                     remaining=remaining_minute,
                     penalty_level="throttle",
                 )
@@ -149,7 +154,7 @@ class RateLimiter:
             if worst_ratio >= self._warn_ratio:
                 return RateLimitResult(
                     allowed=True,
-                    reason=f"Agent nearing rate limit ({minute_count}/{self._agent_minute_limit}/min)",
+                    reason=f"Agent nearing rate limit ({minute_count + 1}/{self._agent_minute_limit}/min)",
                     remaining=remaining_minute,
                     penalty_level="warn",
                 )
@@ -172,28 +177,33 @@ class RateLimiter:
                     penalty_level="block",
                 )
 
-            minute_count = self._ip_minute_windows[ip_address].record()
-            hour_count = self._ip_hour_windows[ip_address].record()
+            # Check counts first without recording
+            minute_count = self._ip_minute_windows[ip_address].count()
+            hour_count = self._ip_hour_windows[ip_address].count()
 
-            minute_ratio = minute_count / self._ip_minute_limit
-            hour_ratio = hour_count / self._ip_hour_limit
+            minute_ratio = (minute_count + 1) / self._ip_minute_limit
+            hour_ratio = (hour_count + 1) / self._ip_hour_limit
             worst_ratio = max(minute_ratio, hour_ratio)
-            remaining = max(0, self._ip_minute_limit - minute_count)
+            remaining = max(0, self._ip_minute_limit - minute_count - 1)
 
             if worst_ratio >= self._block_ratio:
                 self._blocked_until[f"ip:{ip_address}"] = time.time() + self._penalty_duration
                 return RateLimitResult(
                     allowed=False,
-                    reason=f"IP rate limit exceeded ({minute_count}/min)",
+                    reason=f"IP rate limit exceeded ({minute_count + 1}/min)",
                     remaining=0,
                     retry_after_seconds=self._penalty_duration,
                     penalty_level="block",
                 )
 
+            # Record the request only for allowed requests
+            self._ip_minute_windows[ip_address].record()
+            self._ip_hour_windows[ip_address].record()
+
             if worst_ratio >= 1.0:
                 return RateLimitResult(
                     allowed=True,
-                    reason=f"IP nearing rate limit ({minute_count}/min)",
+                    reason=f"IP nearing rate limit ({minute_count + 1}/min)",
                     remaining=remaining,
                     penalty_level="throttle",
                 )

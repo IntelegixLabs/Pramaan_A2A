@@ -45,6 +45,15 @@ class IntentSentinel:
         self._counterparty_history[agent_did].add(target_did)
         if amount is not None:
             self._amount_history[agent_did].append(amount)
+        # Trim old entries to prevent unbounded growth
+        cutoff = now - (self._velocity_window * 2)
+        self._request_history[agent_did] = [
+            t for t in self._request_history[agent_did] if t > cutoff
+        ]
+        if amount is not None:
+            # Keep amount history bounded (last 1000 entries)
+            if len(self._amount_history[agent_did]) > 1000:
+                self._amount_history[agent_did] = self._amount_history[agent_did][-1000:]
 
     def score(self, request: dict, envelope: dict) -> float:
         """Compute a risk score (0.0-1.0) based on behavioral signals."""

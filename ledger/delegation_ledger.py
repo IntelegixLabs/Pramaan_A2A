@@ -11,6 +11,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from threading import Lock
 
 
 @dataclass
@@ -28,6 +29,7 @@ class DelegationLedger:
     def __init__(self, db_path: str = "handshakeos.db"):
         self.db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
+        self._write_lock = Lock()
 
     def initialize(self):
         """Create tables from schema.sql."""
@@ -76,17 +78,18 @@ class DelegationLedger:
         previous_hash = self._get_previous_event_hash(agent_did)
         event_hash = self._compute_event_hash(event_id, event_type, agent_did, previous_hash)
 
-        conn.execute(
-            "INSERT INTO delegation_events "
-            "(event_id, event_type, human_leader_id, agent_did, policy_id, scope_json, "
-            "valid_from, valid_until, previous_event_hash, event_hash, signed_by, signature) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (event_id, event_type, human_leader_id, agent_did, policy_id,
-             json.dumps(scope), now.isoformat(), valid_until.isoformat(),
-             previous_hash, event_hash, signed_by or human_leader_id,
-             signature or f"sig-{event_id}")
-        )
-        conn.commit()
+        with self._write_lock:
+            conn.execute(
+                "INSERT INTO delegation_events "
+                "(event_id, event_type, human_leader_id, agent_did, policy_id, scope_json, "
+                "valid_from, valid_until, previous_event_hash, event_hash, signed_by, signature) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (event_id, event_type, human_leader_id, agent_did, policy_id,
+                 json.dumps(scope), now.isoformat(), valid_until.isoformat(),
+                 previous_hash, event_hash, signed_by or human_leader_id,
+                 signature or f"sig-{event_id}")
+            )
+            conn.commit()
         return event_id
 
     def verify_delegation(self, agent_did: str, action: str,
@@ -104,14 +107,25 @@ class DelegationLedger:
             (agent_did, now_str, now_str)
         ).fetchall()
 
-        # Check if agent has been revoked
-        revoked = conn.execute(
-            "SELECT * FROM revocation_events WHERE agent_did = ? "
-            "ORDER BY effective_at DESC LIMIT 1",
-            (agent_did,)
-        ).fetchone()
-        if revoked:
-            return DelegationResult(valid=False, error="Agent has been revoked")
+        # Check if agent has been revoked AFTER the most recent delegation
+        latest_delegation_time = rows[0]["valid_from"] if rows else None
+        if latest_delegation_time:
+            revoked = conn.execute(
+                "SELECT * FROM revocation_events WHERE agent_did = ? "
+                "AND effective_at > ? "
+                "ORDER BY effective_at DESC LIMIT 1",
+                (agent_did, latest_delegation_time)
+            ).fetchone()
+            if revoked:
+                return DelegationResult(valid=False, error="Agent has been revoked")
+        else:
+            # No valid delegations found, check for any revocation
+            revoked = conn.execute(
+                "SELECT * FROM revocation_events WHERE agent_did = ? LIMIT 1",
+                (agent_did,)
+            ).fetchone()
+            if revoked:
+                return DelegationResult(valid=False, error="Agent has been revoked")
 
         for row in rows:
             scope = json.loads(row["scope_json"])
@@ -172,15 +186,16 @@ class DelegationLedger:
     ):
         """Store a Trust Receipt in the ledger."""
         conn = self._get_conn()
-        conn.execute(
-            "INSERT INTO trust_receipts "
-            "(receipt_id, handshake_id, requester_agent_did, target_agent_did, action, "
-            "decision, poa_quorum, validator_signatures, risk_score, ledger_root) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (receipt_id, handshake_id, requester_did, target_did, action,
-             decision, quorum, validator_sigs, risk_score, ledger_root)
-        )
-        conn.commit()
+        with self._write_lock:
+            conn.execute(
+                "INSERT INTO trust_receipts "
+                "(receipt_id, handshake_id, requester_agent_did, target_agent_did, action, "
+                "decision, poa_quorum, validator_signatures, risk_score, ledger_root) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (receipt_id, handshake_id, requester_did, target_did, action,
+                 decision, quorum, validator_sigs, risk_score, ledger_root)
+            )
+            conn.commit()
 
     def store_revocation(
         self,
@@ -193,14 +208,15 @@ class DelegationLedger:
     ):
         """Store a revocation event."""
         conn = self._get_conn()
-        conn.execute(
-            "INSERT INTO revocation_events "
-            "(revocation_id, agent_did, revoked_by, reason, effective_at, "
-            "global_sequence_number, signature) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (revocation_id, agent_did, revoked_by, reason,
-             datetime.now(timezone.utc).isoformat(), sequence_number, signature)
-        )
-        conn.commit()
+        with self._write_lock:
+            conn.execute(
+                "INSERT INTO revocation_events "
+                "(revocation_id, agent_did, revoked_by, reason, effective_at, "
+                "global_sequence_number, signature) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (revocation_id, agent_did, revoked_by, reason,
+                 datetime.now(timezone.utc).isoformat(), sequence_number, signature)
+            )
+            conn.commit()
 
     def get_trust_receipts(self, limit: int = 50) -> list[dict]:
         """Return recent trust receipts."""

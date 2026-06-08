@@ -46,7 +46,7 @@ class VCVerifier:
                 if datetime.now(timezone.utc) > valid_until:
                     return VerificationResult(ok=False, error="Agent credential validUntil has passed")
             except (ValueError, TypeError):
-                pass
+                return VerificationResult(ok=False, error="Invalid validUntil date format")
 
         return VerificationResult(ok=True, claims=claims)
 
@@ -75,7 +75,7 @@ class VCVerifier:
                 if datetime.now(timezone.utc) > expires_at:
                     return VerificationResult(ok=False, error="Human approval has expired")
             except (ValueError, TypeError):
-                pass
+                return VerificationResult(ok=False, error="Invalid expiresAt date format")
 
         return VerificationResult(ok=True, claims=claims)
 
