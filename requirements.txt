@@ -3,7 +3,6 @@ uvicorn==0.30.6
 pyjwt==2.9.0
 httpx>=0.28.0
 pydantic>=2.13.0
-python-multipart==0.0.9
 aiofiles==24.1.0
 a2a-sdk>=1.0.0
 ag-ui-protocol>=0.1.18
@@ -11,3 +10,4 @@ sse-starlette>=3.0.0
 langchain>=0.3.0
 langchain-core>=0.3.0
 langgraph>=0.2.0
+fastapi[standard]
