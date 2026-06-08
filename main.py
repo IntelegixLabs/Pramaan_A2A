@@ -185,7 +185,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8200"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost:8200","http://localhost:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1431,12 +1431,12 @@ async def scan_agent(body: dict):
 
     # 1. Run the base static vulnerability analysis
     base_report = _analyze_agent_card(card, used_url, fetch_time_ms)
-    
+
     # 2. Run the dynamic Red Team Agent (Pramaan Sentinel)
     from agents.security_scanner_agent import SecurityScannerAgent
     scanner = SecurityScannerAgent()
     report = scanner.scan(used_url, card, base_report)
-        
+
     report["raw_card"] = card  # Include raw card for reference
 
     # Log the scan in audit
@@ -1460,11 +1460,11 @@ async def scan_mcp_server(body: dict):
     mcp_url = body.get("mcp_url")
     if not mcp_url:
         return {"error": "mcp_url is required"}
-        
+
     from agents.mcp_security_scanner import MCPSecurityScannerAgent
     scanner = MCPSecurityScannerAgent()
     report = scanner.scan(mcp_url)
-    
+
     audit_logger.log(
         category=AuditCategory.GOVERNANCE,
         severity=AuditSeverity.INFO,
@@ -1472,7 +1472,7 @@ async def scan_mcp_server(body: dict):
         agent_did=mcp_url,
         details={"score": report['security_score'], "grade": report['grade']}
     )
-    
+
     return report
 
 
