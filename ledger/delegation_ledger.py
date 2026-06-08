@@ -33,6 +33,8 @@ class DelegationLedger:
 
     def initialize(self):
         """Create tables from schema.sql."""
+        if os.environ.get("VERCEL"):
+            self.db_path = "/tmp/demo.db"
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         schema_path = os.path.join(os.path.dirname(__file__), "schema.sql")
