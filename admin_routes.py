@@ -8,6 +8,10 @@ from security.sandbox import sandbox
 from security.authorization import authorization_engine
 from security.human_review import human_review_queue
 from security.agent_manager import agent_manager
+from fastapi import UploadFile, File, Form
+from security.document_scanner import scan_document
+from security.rag_manager import rag_manager
+from security.pii_redactor import pii_redactor
 
 router = APIRouter(prefix="/admin", tags=["admin", "security"])
 
@@ -87,6 +91,59 @@ async def reject_review(review_id: str):
 @router.get("/agents")
 async def get_custom_agents():
     return agent_manager.get_all_agents()
+
+@router.delete("/agents/{agent_id}")
+async def delete_custom_agent(agent_id: str):
+    if agent_manager.delete_agent(agent_id):
+        return {"status": "deleted"}
+    raise HTTPException(status_code=404, detail="Agent not found")
+
+# --- RAG Knowledge Base ---
+@router.post("/rag/upload")
+async def upload_document(file: UploadFile = File(...), skip_security: bool = Form(False), mask_pii: bool = Form(False)):
+    content = await file.read()
+    
+    # 1. Extract text for scanning
+    try:
+        text_preview = rag_manager.extract_text(content, file.filename)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    # 1.5 Mask PII if enabled
+    if mask_pii:
+        redaction_result = pii_redactor.redact(text_preview)
+        text_preview = redaction_result.text
+        
+    # 2. Agentic Security Scan
+    scan_result = {"is_safe": True, "reason": "Security scan bypassed."}
+    if not skip_security:
+        scan_result = scan_document(file.filename, text_preview)
+        if not scan_result.get("is_safe", False):
+            raise HTTPException(status_code=403, detail=f"Agentic Security Rejected Document: {scan_result.get('reason')}")
+        
+    # 3. Ingest into Chroma
+    try:
+        doc_info = rag_manager.ingest_document(file.filename, raw_text=text_preview)
+        return {"status": "success", "document": doc_info, "scan": scan_result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to ingest document: {str(e)}")
+
+@router.get("/rag/documents")
+async def get_documents():
+    return rag_manager.get_documents()
+
+@router.get("/rag/documents/{doc_id}")
+async def get_document_content(doc_id: str):
+    text = rag_manager.get_document_text(doc_id)
+    if not text or text == "Text not found.":
+        raise HTTPException(status_code=404, detail="Document text not found")
+    return {"id": doc_id, "text": text}
+
+@router.delete("/rag/documents/{doc_id}")
+async def delete_document(doc_id: str):
+    if rag_manager.delete_document(doc_id):
+        return {"status": "deleted"}
+    raise HTTPException(status_code=404, detail="Document not found")
 
 @router.get("/agents/{agent_id}")
 async def get_custom_agent(agent_id: str):
