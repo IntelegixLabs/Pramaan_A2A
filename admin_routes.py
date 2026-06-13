@@ -174,6 +174,12 @@ from security.scan_repository import scan_repository
 async def get_security_scans():
     return {"scans": scan_repository.get_all_scans()}
 
+@router.delete("/scans/{scan_id}")
+async def delete_security_scan(scan_id: str):
+    if scan_repository.delete_scan(scan_id):
+        return {"status": "success"}
+    raise HTTPException(status_code=404, detail="Scan not found")
+
 @router.post("/scans/compare")
 async def compare_scans(body: dict):
     scan1_id = body.get("scan1_id")

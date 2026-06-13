@@ -101,6 +101,12 @@ class DashboardRepository:
             )
             conn.commit()
 
+    def update_agent_scan_by_url(self, url: str, target_name: str, last_score: float):
+        conn = self._get_conn()
+        r = conn.execute("SELECT agent_id FROM dashboard_agents WHERE url = ? OR name = ?", (url, target_name)).fetchone()
+        if r:
+            self.update_agent_scan(r["agent_id"], last_score)
+
     def remove_agent(self, agent_id: str):
         conn = self._get_conn()
         with self._write_lock:

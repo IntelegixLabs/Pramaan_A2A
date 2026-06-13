@@ -182,12 +182,12 @@ async def lifespan(app: FastAPI):
     )
     set_gateway(gateway)
 
-    print("🤝 HandshakeOS AGL Gateway started")
-    print("   → HR Agent:      did:gcc:agent:hr-relocation-07")
-    print("   → Finance Agent: did:gcc:agent:finance-disbursement-02")
-    print("   → Policy:        policy-relocation-autopay-v3 ($10,000 limit)")
-    print("   → Quorum:        2-of-3 (low risk) / 3-of-5 (high risk)")
-    print("   → Security:      6 modules active (audit, rate-limit, prompt-shield, replay-guard, anomaly, honeypot)")
+    print("HandshakeOS AGL Gateway started")
+    print("   -> HR Agent:      did:gcc:agent:hr-relocation-07")
+    print("   -> Finance Agent: did:gcc:agent:finance-disbursement-02")
+    print("   -> Policy:        policy-relocation-autopay-v3 ($10,000 limit)")
+    print("   -> Quorum:        2-of-3 (low risk) / 3-of-5 (high risk)")
+    print("   -> Security:      6 modules active (audit, rate-limit, prompt-shield, replay-guard, anomaly, honeypot)")
 
     yield
 
@@ -1479,12 +1479,17 @@ async def scan_agent(body: dict):
 
     # Save to database
     from security.scan_repository import scan_repository
+    from security.dashboard_repository import dashboard_repository
+    
+    target_name = card.get("name", agent_url) if card else agent_url
     scan_repository.save_scan(
         scan_type="agent",
-        target_name=card.get("name", agent_url) if card else agent_url,
+        target_name=target_name,
         findings=report.get("findings", []),
-        risk_score=report.get("security_score", 0.0)
+        risk_score=report.get("security_score", 0.0),
+        report=report
     )
+    dashboard_repository.update_agent_scan_by_url(agent_url, target_name, report.get("security_score", 0.0))
 
     return report
 
@@ -1513,12 +1518,15 @@ async def scan_mcp_server(body: dict):
 
     # Save to database
     from security.scan_repository import scan_repository
+    from security.dashboard_repository import dashboard_repository
     scan_repository.save_scan(
         scan_type="mcp",
         target_name=mcp_url,
         findings=report.get("findings", []),
-        risk_score=report.get("security_score", 0.0)
+        risk_score=report.get("security_score", 0.0),
+        report=report
     )
+    dashboard_repository.update_agent_scan_by_url(mcp_url, mcp_url, report.get("security_score", 0.0))
 
     return report
 
@@ -1538,12 +1546,18 @@ async def scan_agent_card_direct(body: dict):
 
     # Save to database
     from security.scan_repository import scan_repository
+    from security.dashboard_repository import dashboard_repository
+    
+    target_name = card.get("name", "Direct Input Agent")
     scan_repository.save_scan(
         scan_type="agent",
-        target_name=card.get("name", "Direct Input Agent"),
+        target_name=target_name,
         findings=report.get("findings", []),
-        risk_score=report.get("security_score", 0.0)
+        risk_score=report.get("security_score", 0.0),
+        report=report
     )
+    # Use empty URL for direct inputs, or whatever identifier
+    dashboard_repository.update_agent_scan_by_url("", target_name, report.get("security_score", 0.0))
 
     return report
 
