@@ -39,7 +39,16 @@ HandshakeOS extends the [A2A Protocol](https://a2a-protocol.org/latest/specifica
 -  **Revocation enforcement** : Sub-second global revocation with fail-closed design
 -  **Circuit breaker** : Automatic agent quarantine on risk threshold breach
 -  **Trust Receipt ledger** : Append-only audit trail of all governance decisions
--  **Segregation of duties** : Agents cannot self-approve
+- **Segregation of duties** : Agents cannot self-approve
+
+### Global Security Pipeline (New!)
+A unified interceptor layer that all agent requests pass through before entering the AGL Gateway:
+- **PII Redactor**: Regex-based engine masking sensitive entities (Email, SSN, Credit Cards, API Keys).
+- **Goal Integrity Checker**: Validates that requested tools align perfectly with the user's intent.
+- **OPA / Rego Engine**: Centralized access control evaluating `principal` and `tool risk` against declarative `.rego` policies.
+- **Sandbox Limits**: Hard limits on autonomy budgets and a strict blocklist for unsafe tools (e.g. `run_shell`).
+- **Human Review Queue**: High-risk actions identified by OPA pause execution and route to a human-in-the-loop UI.
+- **Output Validator**: Final scan of the agent's output against a blocklist before returning payload.
 
 ### Advanced Security (6 Modules)
 -  **Security Audit Logger** : Tamper-evident hash-chained audit trail (14 categories, 5 severity levels)
@@ -59,49 +68,44 @@ This converts A2A from a communication protocol into a **governed trust fabric**
 
 ## Architecture
 
-```text
-                               Human Admin Console
-                                        |
-                                        v
-                            Delegation + Revocation Service
-                                        |
-                                        v
-       +----------------+        +--------------------+        +------------------+
-       | HR Agent       | -----> | AGL Sidecar/Gateway| -----> | Finance Agent    |
-       | (LangChain)    | A2A    | HandshakeOS Layer  | A2A    | (LangChain)      |
-       +----------------+        +--------------------+        +------------------+
-               |                        |                              |
-               v                        v                              v
-         AG-UI Dashboard        PoA Validator Quorum          Trust Receipt Ledger
-         (React + SSE)    Identity+Delegation+Policy+Risk
+## Architecture
 
-                  ┌─────────────────────────────────┐
-                  │    6 Advanced Security Modules  │
-                  ├─────────────────────────────────┤
-                  │ Audit Logger (hash-chained)     │
-                  │ Rate Limiter (per-agent + IP)   │
-                  │ Prompt Injection Shield (6-layer)│
-                  │ Replay Guard (nonce + hash)     │
-                  │ Anomaly Detector (behavioral)   │
-                  │ Honeypot / Canary (deception)   │
-                  └─────────────────────────────────┘
-
-                  ===================================
-                  |   Pramaan Sentinel (Scanners)   |
-                  ===================================
-                         /                   \
-                        v                     v
-            ┌────────────────────┐   ┌────────────────────┐
-            │ MCP Security       │   │ A2A Agent          │
-            │ Scanner (Agent)    │   │ Scanner (Agent)    │
-            ├────────────────────┤   ├────────────────────┤
-            │ • Discovery Engine │   │ • Config Validator │
-            │ • Red Team Fuzzer  │   │ • Policy Checker   │
-            │ • Scoring Matrix   │   │ • Trust Profiling  │
-            └─────────┬──────────┘   └─────────┬──────────┘
-                      |                        |
-                      v                        v
-            [External MCP Server]     [Internal A2A Agent]
+```mermaid
+graph TD
+    User([Human User / Admin]) --> |UI Dashboard| ReactApp[React + AG-UI Dashboard]
+    
+    ReactApp --> |1. Configure Rules| AdminAPI[FastAPI Admin API]
+    ReactApp --> |2. Trigger Scenarios| GatewayAPI[FastAPI AGL Endpoint]
+    
+    subgraph Global Security Pipeline
+        GatewayAPI --> PII[PII Redactor]
+        PII --> Goal[Goal Integrity Check]
+        Goal --> OPA[OPA/Rego Engine]
+        OPA --> Sandbox[Sandbox Limits]
+        OPA -.-> |High Risk Action| Human[Human Review Queue]
+        Human -.-> |Approve| Sandbox
+    end
+    
+    subgraph AGL Governance Handshake
+        Sandbox --> VCIssuer[VC Identity Check]
+        VCIssuer --> Revocation[Revocation & Quarantine]
+        Revocation --> Delegation[Delegation Chain]
+        Delegation --> ZKP[ZKP Policy Limits]
+        ZKP --> Risk[Intent Risk Scoring]
+        Risk --> Quorum[PoA Quorum Signatures]
+    end
+    
+    Quorum --> AgentNetwork((Agent Network))
+    
+    subgraph Agent Network
+        HRAgent[HR Agent] --> |A2A Message| FinanceAgent[Finance Agent]
+    end
+    
+    AgentNetwork --> OutputVal[Output Validator]
+    OutputVal --> |Secure Payload| ReactApp
+    
+    AdminAPI -.-> |Live Update Rego/Rules| PII
+    AdminAPI -.-> |Live Update Rego/Rules| OPA
 ```
 
 
