@@ -205,8 +205,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://pramaan-a2-a-ui.vercel.app"],
-    # allow_origin_regex=r"https://[a-zA-Z0-9][-a-zA-Z0-9]*\.vercel\.app",
+    # allow_origins=["https://pramaan-a2-a-ui.vercel.app"],
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
