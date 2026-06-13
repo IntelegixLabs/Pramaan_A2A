@@ -9,10 +9,12 @@ Main application server — FastAPI with AGL Gateway, agents, and all governance
 """
 
 import os
+import re
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 from identity.vc_issuer import VCIssuer
 from identity.vc_verifier import VCVerifier
@@ -72,6 +74,27 @@ def _cors_origins() -> list[str]:
     if extra:
         origins.extend(part.strip() for part in extra.split(",") if part.strip())
     return origins
+
+
+_VERCEL_ORIGIN = re.compile(r"^https://[\w-]+\.vercel\.app$", re.IGNORECASE)
+
+
+def _is_allowed_origin(origin: str | None) -> bool:
+    if not origin:
+        return False
+    return origin in _cors_origins() or bool(_VERCEL_ORIGIN.match(origin))
+
+
+def _cors_response_headers(origin: str, request: Request) -> dict[str, str]:
+    requested_headers = request.headers.get("access-control-request-headers")
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": requested_headers or "*",
+        "Access-Control-Max-Age": "86400",
+        "Vary": "Origin",
+        "X-Cors-Policy": "pramaan-explicit-v1",
+    }
 
 
 def setup_demo_data():
@@ -197,16 +220,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins(),
-    allow_origin_regex=r"https://.*\.vercel\.app",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 app.include_router(agl_router)
 app.include_router(agui_router)
@@ -1784,6 +1797,21 @@ async def toggle_security_feature(body: dict):
         "enabled": _security_feature_state[feature_id],
         "message": f"{'Enabled' if _security_feature_state[feature_id] else 'Disabled'} {feature['name'] if feature else feature_id}",
     }
+
+
+@app.middleware("http")
+async def cors_middleware(request: Request, call_next):
+    """Explicit CORS — more reliable than CORSMiddleware on Vercel serverless."""
+    origin = request.headers.get("origin")
+
+    if request.method == "OPTIONS" and _is_allowed_origin(origin):
+        return Response(status_code=204, headers=_cors_response_headers(origin, request))
+
+    response = await call_next(request)
+    if _is_allowed_origin(origin):
+        for key, value in _cors_response_headers(origin, request).items():
+            response.headers[key] = value
+    return response
 
 
 if __name__ == "__main__":
