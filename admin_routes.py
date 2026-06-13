@@ -7,6 +7,7 @@ from security.output_validator import output_validator
 from security.sandbox import sandbox
 from security.authorization import authorization_engine
 from security.human_review import human_review_queue
+from security.agent_manager import agent_manager
 
 router = APIRouter(prefix="/admin", tags=["admin", "security"])
 
@@ -81,4 +82,31 @@ async def reject_review(review_id: str):
     if human_review_queue.reject(review_id):
         return {"status": "rejected"}
     raise HTTPException(status_code=404, detail="Review not found or not pending")
+
+# --- Custom Agents ---
+@router.get("/agents")
+async def get_custom_agents():
+    return agent_manager.get_all_agents()
+
+@router.get("/agents/{agent_id}")
+async def get_custom_agent(agent_id: str):
+    agent = agent_manager.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent
+
+@router.post("/agents")
+async def create_custom_agent(agent_data: dict):
+    agent = agent_manager.create_agent(agent_data)
+    return agent
+
+@router.put("/agents/{agent_id}")
+async def update_custom_agent(agent_id: str, agent_data: dict):
+    agent = agent_manager.update_agent(agent_id, agent_data)
+    return agent
+
+@router.delete("/agents/{agent_id}")
+async def delete_custom_agent(agent_id: str):
+    agent_manager.delete_agent(agent_id)
+    return {"status": "success"}
 

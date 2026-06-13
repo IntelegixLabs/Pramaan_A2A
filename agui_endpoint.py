@@ -86,6 +86,10 @@ async def agui_run(request: Request):
             elif scenario == "human-review":
                 async for evt in _live_handshake(encoder, thread_id, run_id, 9000):
                     yield evt
+            elif scenario.startswith("custom_agent_"):
+                agent_id = scenario.replace("custom_agent_", "")
+                async for evt in _run_custom_agent(encoder, thread_id, run_id, agent_id, messages):
+                    yield evt
             else:
                 async for evt in _demo_valid_handshake(encoder, thread_id, run_id, amount):
                     yield evt
@@ -861,4 +865,64 @@ async def agui_status():
             {"step": 9, "name": "Agent Execution", "description": "Forward to agent executor with Trust Receipt"},
         ],
     }
+
+async def _run_custom_agent(encoder: EventEncoder, thread_id: str, run_id: str, agent_id: str, messages: list):
+    from agents.custom_agent import CustomAgentRunner
+    
+    t_start = time.time()
+    msg_id = str(uuid.uuid4())
+    
+    yield encoder.encode(StepStartedEvent(type=EventType.STEP_STARTED, step_name="agent_execution"))
+    yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+        "step": "agent_execution", "status": "running", "detail": f"Initializing Custom Agent {agent_id}"
+    }))
+    
+    try:
+        runner = CustomAgentRunner(agent_id)
+        
+        user_message = "Hello"
+        if messages and isinstance(messages, list):
+            user_message = messages[-1].get("content", "Hello")
+            
+        yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+            "step": "agent_execution", "status": "running", "detail": f"Executing with tools: {[t.name for t in runner.tools]}"
+        }))
+        
+        import asyncio
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, runner.invoke, user_message)
+        
+        yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+            "step": "agent_execution", "status": "passed", "detail": f"Agent completed successfully"
+        }))
+        yield encoder.encode(StepFinishedEvent(type=EventType.STEP_FINISHED, step_name="agent_execution"))
+        
+        elapsed_ms = (time.time() - t_start) * 1000
+        
+        yield encoder.encode(StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot={
+            "scenario": f"custom_agent_{agent_id}",
+            "outcome": "APPROVED",
+            "steps_completed": 1,
+            "elapsed_ms": round(elapsed_ms, 2)
+        }))
+        
+        yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
+        yield encoder.encode(TextMessageContentEvent(type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id, delta=response))
+        yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
+        
+    except Exception as e:
+        yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+            "step": "agent_execution", "status": "failed", "detail": f"Execution failed: {str(e)}"
+        }))
+        yield encoder.encode(StepFinishedEvent(type=EventType.STEP_FINISHED, step_name="agent_execution"))
+        
+        yield encoder.encode(StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot={
+            "scenario": f"custom_agent_{agent_id}",
+            "outcome": "FAILED",
+            "error": str(e)
+        }))
+        
+        yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
+        yield encoder.encode(TextMessageContentEvent(type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id, delta=f"I encountered a fatal error during initialization or execution:\n\n```\n{str(e)}\n```"))
+        yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
 
