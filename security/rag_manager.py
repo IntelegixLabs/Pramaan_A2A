@@ -31,7 +31,10 @@ def get_embeddings():
                     return [0.1] * 1536
             return FakeEmbeddings()
 
-DB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".ag_chroma")
+if os.environ.get("VERCEL"):
+    DB_DIR = "/tmp/.ag_chroma"
+else:
+    DB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".ag_chroma")
 
 class RAGManager:
     def __init__(self):

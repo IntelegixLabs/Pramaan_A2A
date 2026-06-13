@@ -3,7 +3,10 @@ import json
 import uuid
 import os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "handshakeos.db")
+if os.environ.get("VERCEL"):
+    DB_PATH = "/tmp/handshakeos.db"
+else:
+    DB_PATH = os.path.join(os.path.dirname(__file__), "..", "handshakeos.db")
 
 class AgentManager:
     def __init__(self, db_path=DB_PATH):

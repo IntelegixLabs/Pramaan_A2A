@@ -4,6 +4,11 @@ import os
 import uuid
 from pydantic import BaseModel
 
+
+def _is_serverless() -> bool:
+    return bool(os.environ.get("VERCEL"))
+
+
 class Principal(BaseModel):
     user_id: str
     tenant_id: str
@@ -14,7 +19,8 @@ class Principal(BaseModel):
 
 class AuthorizationEngine:
     def __init__(self):
-        self.rego_file = os.path.join(os.path.dirname(__file__), "policy.rego")
+        self._bundle_rego_file = os.path.join(os.path.dirname(__file__), "policy.rego")
+        self.rego_file = self._bundle_rego_file
         self.opa_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "opa.exe")
         if not os.path.exists(self.rego_file):
             self.write_default_rego()
@@ -27,6 +33,10 @@ class AuthorizationEngine:
             return ""
 
     def set_rego(self, content: str):
+        if _is_serverless():
+            self.rego_file = os.path.join("/tmp", "policy.rego")
+        else:
+            self.rego_file = self._bundle_rego_file
         with open(self.rego_file, "w") as f:
             f.write(content)
 
@@ -113,7 +123,10 @@ decision = {
             "tool": tool,
             "context": context
         }
-        input_file = f"opa_input_{uuid.uuid4().hex[:8]}.json"
+        input_file = os.path.join(
+            "/tmp" if _is_serverless() else ".",
+            f"opa_input_{uuid.uuid4().hex[:8]}.json",
+        )
         try:
             with open(input_file, "w") as f:
                 json.dump(input_data, f)
