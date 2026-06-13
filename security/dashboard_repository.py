@@ -40,6 +40,13 @@ class DashboardRepository:
             except sqlite3.OperationalError:
                 pass
                 
+            self._conn.execute('''
+                INSERT OR IGNORE INTO dashboard_agents (agent_id, name, url, scan_interval_minutes, agent_type)
+                VALUES 
+                ('default-hr', 'HR Agent', 'http://localhost:8200/agent/hr', 1440, 'a2a'),
+                ('default-finance', 'Finance Agent', 'http://localhost:8200/agent/finance', 1440, 'a2a')
+            ''')
+            
             self._conn.commit()
 
     def _get_conn(self) -> sqlite3.Connection:

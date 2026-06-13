@@ -133,6 +133,11 @@ def setup_demo_data():
         ]},
         outcome="success",
     )
+    # Initialize repositories to ensure tables are created in new environments
+    from security.scan_repository import scan_repository
+    from security.dashboard_repository import dashboard_repository
+    scan_repository.initialize()
+    dashboard_repository.initialize()
 
 
 @asynccontextmanager

@@ -8,6 +8,43 @@ if os.environ.get("VERCEL"):
 else:
     DB_PATH = os.path.join(os.path.dirname(__file__), "..", "handshakeos.db")
 
+DEFAULT_AGENTS = [
+    {
+        "id": "default-hr",
+        "name": "HR Agent",
+        "description": "Manages employee relocation, salary negotiations, and contract generation.",
+        "system_prompt": "You are the HR Agent. You handle employee relocations and salary negotiations. Always enforce geographic limits and salary caps.",
+        "policies": {"geographic_limits": True, "salary_cap_enforcement": True},
+        "max_budget": 50,
+        "is_default": True,
+        "tools": [
+            {
+                "id": "tool-hr-1",
+                "name": "calculate_relocation_budget",
+                "description": "Calculates the relocation budget based on distance and employee tier.",
+                "code": "# Pre-configured core tool\ndef calculate_relocation_budget(tier: str, distance_km: int) -> float:\n    pass"
+            }
+        ]
+    },
+    {
+        "id": "default-finance",
+        "name": "Finance Agent",
+        "description": "Handles corporate disbursements, wire transfers, and budget approvals.",
+        "system_prompt": "You are the Finance Agent. You execute disbursements upon verifying trust receipts and PoA quorums.",
+        "policies": {"require_poa_quorum": True, "verify_trust_receipts": True},
+        "max_budget": 1000,
+        "is_default": True,
+        "tools": [
+            {
+                "id": "tool-fin-1",
+                "name": "execute_wire_transfer",
+                "description": "Executes a wire transfer to a specified account after validation.",
+                "code": "# Pre-configured core tool\ndef execute_wire_transfer(amount: float, account: str) -> bool:\n    pass"
+            }
+        ]
+    }
+]
+
 class AgentManager:
     def __init__(self, db_path=DB_PATH):
         self.db_path = db_path
@@ -48,9 +85,17 @@ class AgentManager:
                 agent['policies'] = json.loads(agent['policies']) if agent['policies'] else {}
                 cursor.execute('SELECT id, name, description, code FROM custom_tools WHERE agent_id = ?', (agent['id'],))
                 agent['tools'] = [dict(row) for row in cursor.fetchall()]
-            return agents
+                agent['is_default'] = False
+            
+            # Prepend default agents
+            return DEFAULT_AGENTS + agents
 
     def get_agent(self, agent_id: str):
+        # Check defaults first
+        for default_agent in DEFAULT_AGENTS:
+            if default_agent['id'] == agent_id:
+                return default_agent
+
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
@@ -60,6 +105,7 @@ class AgentManager:
                 return None
             agent = dict(row)
             agent['policies'] = json.loads(agent['policies']) if agent['policies'] else {}
+            agent['is_default'] = False
             cursor.execute('SELECT id, name, description, code FROM custom_tools WHERE agent_id = ?', (agent_id,))
             agent['tools'] = [dict(row) for row in cursor.fetchall()]
             return agent
