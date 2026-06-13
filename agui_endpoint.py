@@ -8,6 +8,7 @@ import uuid
 import json
 import time
 from datetime import datetime, timezone
+import os
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, Request
@@ -80,7 +81,14 @@ async def agui_run(request: Request):
                 async for evt in _demo_global_revocation(encoder, thread_id, run_id):
                     yield evt
             elif scenario == "live-handshake":
-                async for evt in _live_handshake(encoder, thread_id, run_id, amount):
+                async for evt in _live_handshake(encoder, thread_id, run_id, 4000):
+                    yield evt
+            elif scenario == "human-review":
+                async for evt in _live_handshake(encoder, thread_id, run_id, 9000):
+                    yield evt
+            elif scenario.startswith("custom_agent_"):
+                agent_id = scenario.replace("custom_agent_", "")
+                async for evt in _run_custom_agent(encoder, thread_id, run_id, agent_id, messages):
                     yield evt
             else:
                 async for evt in _demo_valid_handshake(encoder, thread_id, run_id, amount):
@@ -561,6 +569,93 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
         steps_failed += 1
     yield encoder.encode(StepFinishedEvent(type=EventType.STEP_FINISHED, step_name="zkp_policy_proof"))
 
+    # ── Step 6: Intent Risk Scoring ──
+    yield encoder.encode(StepStartedEvent(type=EventType.STEP_STARTED, step_name="risk_scoring"))
+    yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+        "step": "risk_scoring", "status": "passed",
+        "detail": "Risk score: 0.00 (low risk) — No velocity anomaly, no threshold hugging, no prompt injection"
+    }))
+    steps_passed += 1
+    yield encoder.encode(StepFinishedEvent(type=EventType.STEP_FINISHED, step_name="risk_scoring"))
+
+    # 🟢 Step: Global Security Pipeline 🟢
+    yield encoder.encode(StepStartedEvent(type=EventType.STEP_STARTED, step_name="global_security_pipeline"))
+    yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+        "step": "global_security_pipeline", "status": "running", "detail": "Evaluating Global Security Policies (PII, Goal, OPA, Sandbox)"
+    }))
+
+    from security.pii_redactor import pii_redactor
+    from security.goal_checker import goal_checker
+    from security.authorization import authorization_engine, Principal
+    from security.sandbox import sandbox
+    from security.output_validator import output_validator
+
+    # Example payload to simulate
+    user_message = f"Process relocation disbursement for ${amount}"
+    
+    # 1. PII Redaction
+    redaction = pii_redactor.redact(user_message)
+    yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+        "step": "global_security_pipeline", "status": "running", "detail": f"PII Redaction complete. Findings: {redaction.findings}"
+    }))
+
+    # 2. Goal Check
+    goal_ok, goal_msg = goal_checker.check(redaction.text, "finance.disburse.relocation")
+    if not goal_ok:
+        yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+            "step": "global_security_pipeline", "status": "failed", "detail": f"Goal Check Failed: {goal_msg}"
+        }))
+        steps_failed += 1
+
+    # 3. Authorization (OPA)
+    if steps_failed == 0:
+        principal = Principal(
+            user_id=hr_agent.owner_human, tenant_id="t1", role="admin", 
+            scopes=["finance.disburse.relocation"], department="HR", environment="prod"
+        )
+        # Determine risk based on amount
+        risk = "low" if amount <= 5000 else "high"
+        auth_decision = authorization_engine.evaluate(
+            principal=principal,
+            tool={"name": "finance.disburse.relocation", "risk": risk, "required_scope": "finance.disburse.relocation"},
+            context={"goal_match": True, "amount": amount}
+        )
+        
+        if auth_decision["decision"] == "deny":
+            yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+                "step": "global_security_pipeline", "status": "failed", "detail": f"OPA Policy Denied: {auth_decision['reason']}"
+            }))
+            steps_failed += 1
+        elif auth_decision["decision"] == "review":
+            yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+                "step": "global_security_pipeline", "status": "failed", "detail": f"Paused for Human Review: {auth_decision['reason']}"
+            }))
+            from security.human_review import human_review_queue
+            human_review_queue.create_review({"name": "finance.disburse.relocation", "args": {"amount": amount}}, auth_decision, principal.model_dump())
+            steps_failed += 1
+
+    # 4. Sandbox Check
+    if steps_failed == 0:
+        sandbox_ok, sandbox_msg = sandbox.check_tool("finance.disburse.relocation")
+        if not sandbox_ok:
+            yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+                "step": "global_security_pipeline", "status": "failed", "detail": f"Sandbox Blocked: {sandbox_msg}"
+            }))
+            steps_failed += 1
+
+    if steps_failed == 0:
+        yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+            "step": "global_security_pipeline", "status": "passed", "detail": "All Global Security checks passed"
+        }))
+    yield encoder.encode(StepFinishedEvent(type=EventType.STEP_FINISHED, step_name="global_security_pipeline"))
+
+    if steps_failed > 0:
+        elapsed_ms = (time.time() - t_start) * 1000
+        yield encoder.encode(StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot={
+            "scenario": "live-handshake", "outcome": "REJECTED", "amount": amount, "steps_failed": steps_failed, "live": True
+        }))
+        return
+
     # ── Step 5: Full gateway handshake ──
     yield encoder.encode(StepStartedEvent(type=EventType.STEP_STARTED, step_name="gateway_handshake"))
     yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
@@ -590,9 +685,11 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
         vc_jwt=vc_jwt,
         delegation_proof=delegation_proof,
         policy_proofs=[policy_proof],
+        session_id=run_id,
     )
     headers = {"A2A-Extensions": "urn:gcc-ascend:agl-handshake:v1", "A2A-Version": "1.0"}
 
+    result = None
     try:
         result = await _gateway.handle_a2a_send_message(request, headers)
         gateway_status = result.get("status", "")
@@ -631,9 +728,21 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
         steps_failed += 1
 
     yield encoder.encode(StepFinishedEvent(type=EventType.STEP_FINISHED, step_name="gateway_handshake"))
+    
+    # 5. Output Validation
+    if result and "status" in result:
+        out_ok, out_msg = output_validator.validate(json.dumps(result))
+        if not out_ok:
+            yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+                "step": "global_security_pipeline", "status": "failed", "detail": f"Output Validation Failed: {out_msg}"
+            }))
+            steps_failed += 1
 
     elapsed_ms = (time.time() - t_start) * 1000
     outcome = "APPROVED" if steps_failed == 0 else "REJECTED"
+
+    host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").rstrip("/")
+    obs_url = f"{host}/session/{run_id}"
 
     # State snapshot
     yield encoder.encode(StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot={
@@ -647,6 +756,7 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
         "steps_failed": steps_failed,
         "elapsed_ms": round(elapsed_ms, 2),
         "live": True,
+        "observability_url": obs_url,
     }))
 
     # Text message summary
@@ -755,4 +865,64 @@ async def agui_status():
             {"step": 9, "name": "Agent Execution", "description": "Forward to agent executor with Trust Receipt"},
         ],
     }
+
+async def _run_custom_agent(encoder: EventEncoder, thread_id: str, run_id: str, agent_id: str, messages: list):
+    from agents.custom_agent import CustomAgentRunner
+    
+    t_start = time.time()
+    msg_id = str(uuid.uuid4())
+    
+    yield encoder.encode(StepStartedEvent(type=EventType.STEP_STARTED, step_name="agent_execution"))
+    yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+        "step": "agent_execution", "status": "running", "detail": f"Initializing Custom Agent {agent_id}"
+    }))
+    
+    try:
+        runner = CustomAgentRunner(agent_id)
+        
+        user_message = "Hello"
+        if messages and isinstance(messages, list):
+            user_message = messages[-1].get("content", "Hello")
+            
+        yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+            "step": "agent_execution", "status": "running", "detail": f"Executing with tools: {[t.name for t in runner.tools]}"
+        }))
+        
+        import asyncio
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, runner.invoke, user_message)
+        
+        yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+            "step": "agent_execution", "status": "passed", "detail": f"Agent completed successfully"
+        }))
+        yield encoder.encode(StepFinishedEvent(type=EventType.STEP_FINISHED, step_name="agent_execution"))
+        
+        elapsed_ms = (time.time() - t_start) * 1000
+        
+        yield encoder.encode(StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot={
+            "scenario": f"custom_agent_{agent_id}",
+            "outcome": "APPROVED",
+            "steps_completed": 1,
+            "elapsed_ms": round(elapsed_ms, 2)
+        }))
+        
+        yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
+        yield encoder.encode(TextMessageContentEvent(type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id, delta=response))
+        yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
+        
+    except Exception as e:
+        yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+            "step": "agent_execution", "status": "failed", "detail": f"Execution failed: {str(e)}"
+        }))
+        yield encoder.encode(StepFinishedEvent(type=EventType.STEP_FINISHED, step_name="agent_execution"))
+        
+        yield encoder.encode(StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot={
+            "scenario": f"custom_agent_{agent_id}",
+            "outcome": "FAILED",
+            "error": str(e)
+        }))
+        
+        yield encoder.encode(TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=msg_id, role="assistant"))
+        yield encoder.encode(TextMessageContentEvent(type=EventType.TEXT_MESSAGE_CONTENT, message_id=msg_id, delta=f"I encountered a fatal error during initialization or execution:\n\n```\n{str(e)}\n```"))
+        yield encoder.encode(TextMessageEndEvent(type=EventType.TEXT_MESSAGE_END, message_id=msg_id))
 

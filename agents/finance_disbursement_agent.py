@@ -20,6 +20,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.prebuilt import create_react_agent
 
 from llm_factory import build_llm, get_llm_info, is_live
+from observability.tracer import get_langfuse_handler, langfuse_context
 
 logger = logging.getLogger(__name__)
 
@@ -170,17 +171,19 @@ class FinanceDisbursementAgent(A2AAgentExecutor):
         self._llm_info = get_llm_info()
         logger.info(f"Finance Agent LLM: {self._llm_info.mode} ({self._llm_info.provider})")
 
-    def _run_tools_directly(self, trust_receipt_data: dict) -> dict:
+    def _run_tools_directly(self, trust_receipt_data: dict, session_id: str = None, user_id: str = None, tags: list = None) -> dict:
         """
         Deterministic tool execution — runs governance tools in sequence.
         Uses LangChain tools directly for Trust Receipt verification and payment.
         """
         results = []
+        handler = get_langfuse_handler()
 
-        # Step 1: Verify Trust Receipt via LangChain tool
-        verify_result_str = verify_trust_receipt.invoke({
+        with langfuse_context(session_id=session_id, user_id=user_id, tags=tags):
+            # Step 1: Verify Trust Receipt via LangChain tool
+            verify_result_str = verify_trust_receipt.invoke({
             "receipt_json": json.dumps(trust_receipt_data),
-        })
+        }, config={"callbacks": [handler]} if handler else None)
         results.append(f"verify_trust_receipt → {verify_result_str}")
         verify_result = json.loads(verify_result_str)
 
@@ -198,7 +201,7 @@ class FinanceDisbursementAgent(A2AAgentExecutor):
             "handshake_id": verify_result["handshake_id"],
             "action": verify_result["action"],
             "requester": verify_result["requester"],
-        })
+        }, config={"callbacks": [handler]} if handler else None)
         results.append(f"execute_payment → {payment_result_str}")
         payment_result = json.loads(payment_result_str)
 
@@ -221,32 +224,36 @@ class FinanceDisbursementAgent(A2AAgentExecutor):
         """Return the LLM provider name."""
         return self._llm_info.provider
 
-    def invoke_langchain(self, trust_receipt_data: dict) -> dict:
+    def invoke_langchain(self, trust_receipt_data: dict, session_id: str = None, user_id: str = None, tags: list = None) -> dict:
         """
         Run the LangChain agent for Trust Receipt verification and payment.
         When a live LLM is available, uses real LLM reasoning via create_react_agent.
         Otherwise falls back to deterministic tool execution.
         """
         if is_live():
-            return self._run_with_live_llm(trust_receipt_data)
-        return self._run_tools_directly(trust_receipt_data)
+            return self._run_with_live_llm(trust_receipt_data, session_id, user_id, tags)
+        return self._run_tools_directly(trust_receipt_data, session_id, user_id, tags)
 
-    def _run_with_live_llm(self, trust_receipt_data: dict) -> dict:
+    def _run_with_live_llm(self, trust_receipt_data: dict, session_id: str = None, user_id: str = None, tags: list = None) -> dict:
         """
         Use the real LLM with create_react_agent for intelligent tool selection.
         The LLM decides which tools to call and in what order.
         """
         try:
             agent = create_react_agent(self._llm, self.tools)
-            result = agent.invoke({
-                "messages": [
-                    HumanMessage(content=(
-                        f"{FINANCE_SYSTEM_PROMPT}\n\n"
-                        f"Process this Trust Receipt and execute the payment if valid:\n"
-                        f"{json.dumps(trust_receipt_data, indent=2)}"
-                    ))
-                ]
-            })
+            handler = get_langfuse_handler()
+            config = {"callbacks": [handler]} if handler else None
+            
+            with langfuse_context(session_id=session_id, user_id=user_id, tags=tags):
+                result = agent.invoke({
+                    "messages": [
+                        HumanMessage(content=(
+                            f"{FINANCE_SYSTEM_PROMPT}\n\n"
+                            f"Process this Trust Receipt and execute the payment if valid:\n"
+                            f"{json.dumps(trust_receipt_data, indent=2)}"
+                        ))
+                    ]
+                }, config=config)
             # Extract the final message from the agent
             messages = result.get("messages", [])
             final_msg = messages[-1].content if messages else "Payment processed via live LLM."
@@ -341,7 +348,12 @@ class FinanceDisbursementAgent(A2AAgentExecutor):
             return
 
         # Run LangChain agent for Trust Receipt verification + payment
-        lc_result = self.invoke_langchain(trust_receipt_data)
+        lc_result = self.invoke_langchain(
+            trust_receipt_data,
+            session_id=context_id,
+            user_id=self.agent_did,
+            tags=[self.agent_name, "langchain", "payment-execution"]
+        )
 
         if lc_result["status"] == "REJECTED":
             await event_queue.enqueue_event(
@@ -426,7 +438,12 @@ class FinanceDisbursementAgent(A2AAgentExecutor):
                     "reason": "No Trust Receipt found.", "timestamp": now}
 
         # Use LangChain agent for verification + execution
-        lc_result = self.invoke_langchain(trust_receipt_data)
+        lc_result = self.invoke_langchain(
+            trust_receipt_data,
+            session_id=task_id,
+            user_id=self.agent_did,
+            tags=[self.agent_name, "langchain", "payment-execution"]
+        )
 
         if lc_result["status"] == "REJECTED":
             return {"taskId": task_id, "status": "TASK_STATE_REJECTED",

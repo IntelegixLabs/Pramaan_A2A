@@ -193,6 +193,8 @@ app.add_middleware(
 
 app.include_router(agl_router)
 app.include_router(agui_router)
+import admin_routes
+app.include_router(admin_routes.router)
 
 
 # ─── Demo / Convenience Endpoints ───
