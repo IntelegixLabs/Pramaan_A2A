@@ -1477,6 +1477,15 @@ async def scan_agent(body: dict):
         details={"score": report['security_score'], "grade": report['grade'], "findings": report['summary']['total_findings']},
     )
 
+    # Save to database
+    from security.scan_repository import scan_repository
+    scan_repository.save_scan(
+        scan_type="agent",
+        target_name=card.get("name", agent_url) if card else agent_url,
+        findings=report.get("findings", []),
+        risk_score=report.get("security_score", 0.0)
+    )
+
     return report
 
 
@@ -1502,6 +1511,15 @@ async def scan_mcp_server(body: dict):
         details={"score": report['security_score'], "grade": report['grade']}
     )
 
+    # Save to database
+    from security.scan_repository import scan_repository
+    scan_repository.save_scan(
+        scan_type="mcp",
+        target_name=mcp_url,
+        findings=report.get("findings", []),
+        risk_score=report.get("security_score", 0.0)
+    )
+
     return report
 
 
@@ -1517,6 +1535,16 @@ async def scan_agent_card_direct(body: dict):
 
     report = _analyze_agent_card(card, "direct-input", 0)
     report["raw_card"] = card
+
+    # Save to database
+    from security.scan_repository import scan_repository
+    scan_repository.save_scan(
+        scan_type="agent",
+        target_name=card.get("name", "Direct Input Agent"),
+        findings=report.get("findings", []),
+        risk_score=report.get("security_score", 0.0)
+    )
+
     return report
 
 
