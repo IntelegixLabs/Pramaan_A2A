@@ -55,5 +55,6 @@ CREATE TABLE IF NOT EXISTS dashboard_agents (
     last_scan_time TIMESTAMP,
     next_scan_time TIMESTAMP,
     last_score REAL,
+    agent_type TEXT DEFAULT 'a2a',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

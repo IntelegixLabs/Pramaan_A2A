@@ -34,6 +34,12 @@ class DashboardRepository:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             ''')
+            
+            try:
+                self._conn.execute("ALTER TABLE dashboard_agents ADD COLUMN agent_type TEXT DEFAULT 'a2a';")
+            except sqlite3.OperationalError:
+                pass
+                
             self._conn.commit()
 
     def _get_conn(self) -> sqlite3.Connection:
