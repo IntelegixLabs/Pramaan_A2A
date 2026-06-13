@@ -6,7 +6,10 @@ from typing import List, Dict, Optional
 from threading import Lock
 
 class DashboardRepository:
-    def __init__(self, db_path: str = "handshakeos.db"):
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            db_path = os.path.join(base_dir, "handshakeos.db")
         self.db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
         self._write_lock = Lock()
