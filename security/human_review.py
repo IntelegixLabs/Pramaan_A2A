@@ -5,13 +5,14 @@ class HumanReviewQueue:
     def __init__(self):
         self.reviews = {} # review_id -> review_data
 
-    def create_review(self, tool_call: dict, decision: dict, principal_dict: dict) -> str:
+    def create_review(self, tool_call: dict, decision: dict, principal_dict: dict, agent_response: str = "") -> str:
         review_id = str(uuid.uuid4())
         self.reviews[review_id] = {
             "id": review_id,
             "tool": tool_call,
             "policy_reason": decision.get("reason", ""),
             "principal": principal_dict,
+            "agent_response": agent_response,
             "status": "pending",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }

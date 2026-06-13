@@ -631,7 +631,13 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
                 "step": "global_security_pipeline", "status": "failed", "detail": f"Paused for Human Review: {auth_decision['reason']}"
             }))
             from security.human_review import human_review_queue
-            human_review_queue.create_review({"name": "finance.disburse.relocation", "args": {"amount": amount}}, auth_decision, principal.model_dump())
+            agent_reasoning = f"I have evaluated the request and I need to execute finance.disburse.relocation for ${amount:,.2f}. Please review and approve."
+            human_review_queue.create_review(
+                {"name": "finance.disburse.relocation", "args": {"amount": amount}},
+                auth_decision,
+                principal.model_dump(),
+                agent_response=agent_reasoning
+            )
             steps_failed += 1
 
     # 4. Sandbox Check

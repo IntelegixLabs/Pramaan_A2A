@@ -167,3 +167,71 @@ async def delete_custom_agent(agent_id: str):
     agent_manager.delete_agent(agent_id)
     return {"status": "success"}
 
+# --- Security Scans ---
+from security.scan_repository import scan_repository
+
+@router.get("/scans")
+async def get_security_scans():
+    return {"scans": scan_repository.get_all_scans()}
+
+@router.post("/scans/compare")
+async def compare_scans(body: dict):
+    scan1_id = body.get("scan1_id")
+    scan2_id = body.get("scan2_id")
+    if not scan1_id or not scan2_id:
+        raise HTTPException(status_code=400, detail="Missing scan IDs")
+        
+    scan1 = scan_repository.get_scan(scan1_id)
+    scan2 = scan_repository.get_scan(scan2_id)
+    
+    if not scan1 or not scan2:
+        raise HTTPException(status_code=404, detail="One or both scans not found")
+        
+    # Generate delta: new vulnerabilities vs resolved ones
+    s1_findings = {f["title"]: f for f in scan1["findings"]}
+    s2_findings = {f["title"]: f for f in scan2["findings"]}
+    
+    resolved = [f for title, f in s1_findings.items() if title not in s2_findings]
+    new_vulns = [f for title, f in s2_findings.items() if title not in s1_findings]
+    persistent = [f for title, f in s2_findings.items() if title in s1_findings]
+    
+    return {
+        "scan1": scan1,
+        "scan2": scan2,
+        "comparison": {
+            "resolved": resolved,
+            "new_vulnerabilities": new_vulns,
+            "persistent": persistent,
+            "score_delta": scan2["risk_score"] - scan1["risk_score"]
+        }
+    }
+
+# --- Dashboard Agents (Tracking) ---
+from security.dashboard_repository import dashboard_repository
+
+@router.get("/dashboard-agents")
+async def get_dashboard_agents():
+    return dashboard_repository.get_all_agents()
+
+@router.post("/dashboard-agents")
+async def add_or_update_dashboard_agent(body: dict):
+    agent_id = body.get("agent_id")
+    name = body.get("name")
+    url = body.get("url")
+    interval = body.get("scan_interval_minutes", 0)
+    agent_type = body.get("agent_type", "a2a")
+    
+    if agent_id:
+        dashboard_repository.update_agent_interval(agent_id, interval)
+        return {"status": "success", "agent_id": agent_id}
+    else:
+        if not name or not url:
+            raise HTTPException(status_code=400, detail="Missing name or url")
+        new_id = dashboard_repository.add_agent(name, url, interval, agent_type)
+        return {"status": "success", "agent_id": new_id}
+
+@router.delete("/dashboard-agents/{agent_id}")
+async def delete_dashboard_agent(agent_id: str):
+    dashboard_repository.remove_agent(agent_id)
+    return {"status": "success"}
+

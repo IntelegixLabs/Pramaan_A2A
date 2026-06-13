@@ -1,6 +1,7 @@
 import os
 import io
 import uuid
+import json
 import logging
 from typing import List, Dict, Any
 
@@ -49,8 +50,32 @@ class RAGManager:
             chunk_overlap=200,
             length_function=len,
         )
+        self.metadata_file = os.path.join(DB_DIR, "documents_metadata.json")
+        self.texts_file = os.path.join(DB_DIR, "document_texts.json")
+        
         self.documents_metadata = {} # In-memory map of ingested documents
         self.document_texts = {} # In-memory map of full texts for viewing
+        self._load_persistence()
+
+    def _load_persistence(self):
+        try:
+            if os.path.exists(self.metadata_file):
+                with open(self.metadata_file, "r") as f:
+                    self.documents_metadata = json.load(f)
+            if os.path.exists(self.texts_file):
+                with open(self.texts_file, "r", encoding="utf-8") as f:
+                    self.document_texts = json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load RAG persistence: {e}")
+
+    def _save_persistence(self):
+        try:
+            with open(self.metadata_file, "w") as f:
+                json.dump(self.documents_metadata, f)
+            with open(self.texts_file, "w", encoding="utf-8") as f:
+                json.dump(self.document_texts, f)
+        except Exception as e:
+            logger.error(f"Failed to save RAG persistence: {e}")
         
     def extract_text(self, file_content: bytes, filename: str) -> str:
         """Extract text from supported file types."""
@@ -92,6 +117,7 @@ class RAGManager:
             }
             self.documents_metadata[doc_id] = doc_info
             self.document_texts[doc_id] = text
+            self._save_persistence()
             
             return doc_info
         except Exception as e:
@@ -120,6 +146,7 @@ class RAGManager:
             del self.documents_metadata[doc_id]
             if doc_id in self.document_texts:
                 del self.document_texts[doc_id]
+            self._save_persistence()
             return True
         return False
 

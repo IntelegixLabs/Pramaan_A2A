@@ -38,3 +38,22 @@ CREATE TABLE IF NOT EXISTS revocation_events (
     signature TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS security_scans (
+    scan_id TEXT PRIMARY KEY,
+    scan_type TEXT NOT NULL,
+    target_name TEXT NOT NULL,
+    findings_json TEXT NOT NULL,
+    risk_score REAL NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dashboard_agents (
+    agent_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    scan_interval_minutes INTEGER NOT NULL,
+    last_scan_time TIMESTAMP,
+    next_scan_time TIMESTAMP,
+    last_score REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
