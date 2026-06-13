@@ -590,6 +590,7 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
         vc_jwt=vc_jwt,
         delegation_proof=delegation_proof,
         policy_proofs=[policy_proof],
+        session_id=run_id,
     )
     headers = {"A2A-Extensions": "urn:gcc-ascend:agl-handshake:v1", "A2A-Version": "1.0"}
 
@@ -635,6 +636,9 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
     elapsed_ms = (time.time() - t_start) * 1000
     outcome = "APPROVED" if steps_failed == 0 else "REJECTED"
 
+    host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").rstrip("/")
+    obs_url = f"{host}/session/{run_id}"
+
     # State snapshot
     yield encoder.encode(StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot={
         "scenario": "live-handshake",
@@ -647,6 +651,7 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
         "steps_failed": steps_failed,
         "elapsed_ms": round(elapsed_ms, 2),
         "live": True,
+        "observability_url": obs_url,
     }))
 
     # Text message summary

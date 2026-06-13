@@ -20,6 +20,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.prebuilt import create_react_agent
 
 from llm_factory import build_llm, get_llm_info, is_live
+from observability.tracer import get_langfuse_handler, langfuse_context
 
 logger = logging.getLogger(__name__)
 
@@ -179,53 +180,53 @@ class HRRelocationAgent(A2AAgentExecutor):
         self._llm_info = get_llm_info()
         logger.info(f"HR Agent LLM: {self._llm_info.mode} ({self._llm_info.provider})")
 
-    def _run_tools_directly(self, user_input: str) -> dict:
+    def _run_tools_directly(self, user_input: str, session_id: str = None, user_id: str = None, tags: list = None) -> dict:
         """
         Deterministic tool execution — runs governance tools in sequence.
         This is the primary execution path: it uses LangChain tools but
         drives them deterministically (no LLM needed for tool selection).
         """
         results = []
+        handler = get_langfuse_handler()
 
         # Parse amount from input
         amount = 8000.0
-        for word in user_input.replace(",", "").replace("$", "").split():
+        amount_match = re.search(r'\$\s*([\d,]+(?:\.\d{2})?)', user_input)
+        if amount_match:
             try:
-                val = float(word)
-                if val > 0:
-                    amount = val
-                    break
+                amount = float(amount_match.group(1).replace(',', ''))
             except ValueError:
-                continue
+                pass
 
-        # Step 1: Validate amount via LangChain tool
-        val_result = validate_relocation_amount.invoke({"amount": amount})
-        results.append(f"validate_relocation_amount → {val_result}")
+        with langfuse_context(session_id=session_id, user_id=user_id, tags=tags):
+            # Step 1: Validate amount via LangChain tool
+            val_result = validate_relocation_amount.invoke({"amount": amount}, config={"callbacks": [handler]} if handler else None)
+            results.append(f"validate_relocation_amount → {val_result}")
 
-        # Step 2: Check authority via LangChain tool
-        auth_result = check_agent_authority.invoke({
-            "action": "relocation.disbursement.request",
-            "allowed_actions": ",".join(self.ALLOWED_ACTIONS),
-            "forbidden_actions": ",".join(self.FORBIDDEN_ACTIONS),
-        })
-        results.append(f"check_agent_authority → {auth_result}")
+            # Step 2: Check authority via LangChain tool
+            auth_result = check_agent_authority.invoke({
+                "action": "relocation.disbursement.request",
+                "allowed_actions": ",".join(self.ALLOWED_ACTIONS),
+                "forbidden_actions": ",".join(self.FORBIDDEN_ACTIONS),
+            }, config={"callbacks": [handler]} if handler else None)
+            results.append(f"check_agent_authority → {auth_result}")
 
-        # Step 3: Create case via LangChain tool
-        case_result = create_relocation_case.invoke({
-            "employee_case_ref": f"case-{uuid.uuid4().hex[:6]}",
-            "amount": amount,
-        })
-        results.append(f"create_relocation_case → {case_result}")
+            # Step 3: Create case via LangChain tool
+            case_result = create_relocation_case.invoke({
+                "employee_case_ref": f"case-{uuid.uuid4().hex[:6]}",
+                "amount": amount,
+            }, config={"callbacks": [handler]} if handler else None)
+            results.append(f"create_relocation_case → {case_result}")
 
-        # Step 4: Prepare envelope via LangChain tool
-        env_result = prepare_governance_envelope_data.invoke({
-            "requester_did": self.agent_did,
-            "target_did": "did:gcc:agent:finance-disbursement-02",
-            "action": "finance.disburse.relocation",
-            "case_ref": f"case-{uuid.uuid4().hex[:6]}",
-            "amount": amount,
-        })
-        results.append(f"prepare_governance_envelope_data → {env_result}")
+            # Step 4: Prepare envelope via LangChain tool
+            env_result = prepare_governance_envelope_data.invoke({
+                "requester_did": self.agent_did,
+                "target_did": "did:gcc:agent:finance-disbursement-02",
+                "action": "finance.disburse.relocation",
+                "case_ref": f"case-{uuid.uuid4().hex[:6]}",
+                "amount": amount,
+            }, config={"callbacks": [handler]} if handler else None)
+            results.append(f"prepare_governance_envelope_data → {env_result}")
 
         return {
             "input": user_input,
@@ -250,30 +251,32 @@ class HRRelocationAgent(A2AAgentExecutor):
         """Return the LLM provider name."""
         return self._llm_info.provider
 
-    def invoke_langchain(self, user_input: str, chat_history: list = None) -> dict:
+    def invoke_langchain(self, user_input: str, chat_history: list = None, session_id: str = None, user_id: str = None, tags: list = None) -> dict:
         """
         Run the LangChain agent.
         When a live LLM is available, uses real LLM reasoning via create_react_agent.
         Otherwise falls back to deterministic tool execution.
         """
         if is_live():
-            return self._run_with_live_llm(user_input)
-        return self._run_tools_directly(user_input)
+            return self._run_with_live_llm(user_input, session_id, user_id, tags)
+        return self._run_tools_directly(user_input, session_id, user_id, tags)
 
-    def _run_with_live_llm(self, user_input: str) -> dict:
+    def _run_with_live_llm(self, user_input: str, session_id: str = None, user_id: str = None, tags: list = None) -> dict:
         """
         Use the real LLM with create_react_agent for intelligent tool selection.
         """
         try:
             agent = create_react_agent(self._llm, self.tools)
-            result = agent.invoke({
-                "messages": [
-                    HumanMessage(content=(
-                        f"{HR_SYSTEM_PROMPT}\n\n"
-                        f"Process this relocation request:\n{user_input}"
-                    ))
-                ]
-            })
+            handler = get_langfuse_handler()
+            config = {"callbacks": [handler]} if handler else None
+            
+            with langfuse_context(session_id=session_id, user_id=user_id, tags=tags):
+                result = agent.invoke({
+                    "messages": [
+                        {"role": "user", "content": f"{HR_SYSTEM_PROMPT}\n\nUser Request: {user_input}"}
+                    ]
+                }, config=config)
+                
             messages = result.get("messages", [])
             final_msg = messages[-1].content if messages else "Relocation request processed via live LLM."
 
@@ -314,7 +317,12 @@ class HRRelocationAgent(A2AAgentExecutor):
                     break
 
         # Run LangChain agent
-        lc_result = self.invoke_langchain(user_text)
+        lc_result = self.invoke_langchain(
+            user_text,
+            session_id=context_id,
+            user_id=self.owner_human,
+            tags=[self.agent_name, "langchain", "hr-relocation"]
+        )
         agent_output = lc_result.get("output", "Request processed")
 
         response_data = {
@@ -425,15 +433,20 @@ class HRRelocationAgent(A2AAgentExecutor):
 
     # ── Governance Envelope Builder (backward-compatible) ──
 
-    def create_relocation_request(
+    def prepare_governed_request(
         self,
-        employee_case_ref: str,
         amount: float,
-        currency: str = "USD",
+        case_ref: str,
+        vc_jwt: str,
+        delegation_proof: "DelegationProof",
+        policy_proofs: list["PolicyProof"],
         description: str = "",
+        session_id: str = None,
     ) -> dict:
         """Create a relocation request — runs LangChain tools for validation."""
-        val_result = validate_relocation_amount.invoke({"amount": amount})
+        handler = get_langfuse_handler()
+        with langfuse_context(session_id=session_id, user_id=self.owner_human, tags=[self.agent_name, "relocation-request"]):
+            val_result = validate_relocation_amount.invoke({"amount": amount}, config={"callbacks": [handler]} if handler else None)
         validation = json.loads(val_result)
 
         return {

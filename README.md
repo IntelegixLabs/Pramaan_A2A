@@ -190,6 +190,7 @@ python test_smoke.py
   <img src="docs/screenshots/4.png" width="400"/>
   <img src="docs/screenshots/5.png" width="400"/>
   <img src="docs/screenshots/6.png" width="400"/>
+<img src="docs/screenshots/7.png" width="400"/>
 </p>
 <br />
 
