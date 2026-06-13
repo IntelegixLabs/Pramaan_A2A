@@ -628,7 +628,7 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
             steps_failed += 1
         elif auth_decision["decision"] == "review":
             yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
-                "step": "global_security_pipeline", "status": "failed", "detail": f"Paused for Human Review: {auth_decision['reason']}"
+                "step": "global_security_pipeline", "status": "waiting", "detail": f"Paused for Human Review: {auth_decision['reason']}"
             }))
             from security.human_review import human_review_queue
             agent_reasoning = f"I have evaluated the request and I need to execute finance.disburse.relocation for ${amount:,.2f}. Please review and approve."
