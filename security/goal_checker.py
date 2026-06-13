@@ -28,6 +28,8 @@ class GoalChecker:
             return "record_cleanup"
         if "relocate" in text or "relocation" in text or "move" in text:
             return "relocation"
+        if "payroll" in text or "salary" in text or "payslip" in text:
+            return "payroll"
         return "general_support"
 
     def check(self, message: str, tool_name: str) -> tuple[bool, str]:

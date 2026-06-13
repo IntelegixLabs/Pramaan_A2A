@@ -8,6 +8,7 @@ import uuid
 import json
 import time
 from datetime import datetime, timezone
+import os
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, Request
@@ -570,7 +571,8 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
         "step": "risk_scoring", "status": "passed",
         "detail": "Risk score: 0.00 (low risk) — No velocity anomaly, no threshold hugging, no prompt injection"
     }))
-    yield encoder.encode(StepFinishedEvent(type=EventType.STEP_FINISHED, step_name="policy_sentinel"))
+    steps_passed += 1
+    yield encoder.encode(StepFinishedEvent(type=EventType.STEP_FINISHED, step_name="risk_scoring"))
 
     # 🟢 Step: Global Security Pipeline 🟢
     yield encoder.encode(StepStartedEvent(type=EventType.STEP_STARTED, step_name="global_security_pipeline"))
@@ -625,7 +627,7 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
                 "step": "global_security_pipeline", "status": "failed", "detail": f"Paused for Human Review: {auth_decision['reason']}"
             }))
             from security.human_review import human_review_queue
-            human_review_queue.create_review({"name": "finance.disburse.relocation", "args": {"amount": amount}}, auth_decision, principal.dict())
+            human_review_queue.create_review({"name": "finance.disburse.relocation", "args": {"amount": amount}}, auth_decision, principal.model_dump())
             steps_failed += 1
 
     # 4. Sandbox Check
@@ -683,6 +685,7 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
     )
     headers = {"A2A-Extensions": "urn:gcc-ascend:agl-handshake:v1", "A2A-Version": "1.0"}
 
+    result = None
     try:
         result = await _gateway.handle_a2a_send_message(request, headers)
         gateway_status = result.get("status", "")
@@ -720,16 +723,16 @@ async def _live_handshake(encoder: EventEncoder, thread_id: str, run_id: str, am
         }))
         steps_failed += 1
 
-        yield encoder.encode(StepFinishedEvent(type=EventType.STEP_FINISHED, step_name="gateway_handshake"))
-        
-        # 5. Output Validation
-        if result and "status" in result:
-            out_ok, out_msg = output_validator.validate(json.dumps(result))
-            if not out_ok:
-                yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
-                    "step": "global_security_pipeline", "status": "failed", "detail": f"Output Validation Failed: {out_msg}"
-                }))
-                steps_failed += 1
+    yield encoder.encode(StepFinishedEvent(type=EventType.STEP_FINISHED, step_name="gateway_handshake"))
+    
+    # 5. Output Validation
+    if result and "status" in result:
+        out_ok, out_msg = output_validator.validate(json.dumps(result))
+        if not out_ok:
+            yield encoder.encode(CustomEvent(type=EventType.CUSTOM, name="governance_step", value={
+                "step": "global_security_pipeline", "status": "failed", "detail": f"Output Validation Failed: {out_msg}"
+            }))
+            steps_failed += 1
 
     elapsed_ms = (time.time() - t_start) * 1000
     outcome = "APPROVED" if steps_failed == 0 else "REJECTED"

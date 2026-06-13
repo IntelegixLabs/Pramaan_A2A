@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 class HumanReviewQueue:
     def __init__(self):
@@ -13,7 +13,7 @@ class HumanReviewQueue:
             "policy_reason": decision.get("reason", ""),
             "principal": principal_dict,
             "status": "pending",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         return review_id
 
@@ -24,7 +24,7 @@ class HumanReviewQueue:
         if review_id in self.reviews and self.reviews[review_id]["status"] == "pending":
             self.reviews[review_id]["status"] = "approved"
             self.reviews[review_id]["reviewed_by"] = reviewer
-            self.reviews[review_id]["reviewed_at"] = datetime.utcnow().isoformat()
+            self.reviews[review_id]["reviewed_at"] = datetime.now(timezone.utc).isoformat()
             return True
         return False
 
@@ -32,7 +32,7 @@ class HumanReviewQueue:
         if review_id in self.reviews and self.reviews[review_id]["status"] == "pending":
             self.reviews[review_id]["status"] = "rejected"
             self.reviews[review_id]["reviewed_by"] = reviewer
-            self.reviews[review_id]["reviewed_at"] = datetime.utcnow().isoformat()
+            self.reviews[review_id]["reviewed_at"] = datetime.now(timezone.utc).isoformat()
             return True
         return False
 

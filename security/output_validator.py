@@ -14,7 +14,7 @@ class OutputValidator:
             
         lowered = str(output).lower()
         for word in self.blocklist:
-            if word in lowered:
+            if word.lower() in lowered:
                 return False, f"Output contains blocked term: {word}"
         return True, "Valid output"
 

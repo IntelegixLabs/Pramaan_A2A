@@ -1,6 +1,7 @@
 import subprocess
 import json
 import os
+import uuid
 from pydantic import BaseModel
 
 class Principal(BaseModel):
@@ -108,11 +109,11 @@ decision = {
             return {"decision": "allow", "reason": "OPA not installed"}
 
         input_data = {
-            "principal": principal.dict(),
+            "principal": principal.model_dump(),
             "tool": tool,
             "context": context
         }
-        input_file = "opa_input.json"
+        input_file = f"opa_input_{uuid.uuid4().hex[:8]}.json"
         try:
             with open(input_file, "w") as f:
                 json.dump(input_data, f)

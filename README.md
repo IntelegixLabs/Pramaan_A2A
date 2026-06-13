@@ -68,8 +68,6 @@ This converts A2A from a communication protocol into a **governed trust fabric**
 
 ## Architecture
 
-## Architecture
-
 ```mermaid
 graph TD
     User([Human User / Admin]) --> |UI Dashboard| ReactApp[React + AG-UI Dashboard]
