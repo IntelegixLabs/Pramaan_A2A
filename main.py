@@ -11,7 +11,7 @@ Main application server — FastAPI with AGL Gateway, agents, and all governance
 import os
 import uvicorn
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from identity.vc_issuer import VCIssuer
@@ -200,17 +200,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    # allow_origins=["https://pramaan-a2-a-ui.vercel.app"],
+    allow_origins=_cors_origins(),
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.options("/{rest_of_path:path}")
-async def cors_preflight(rest_of_path: str):
-    return Response(status_code=204)
 
 
 app.include_router(agl_router)
