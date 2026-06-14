@@ -39,13 +39,9 @@ class DashboardRepository:
                 self._conn.execute("ALTER TABLE dashboard_agents ADD COLUMN agent_type TEXT DEFAULT 'a2a';")
             except sqlite3.OperationalError:
                 pass
-                
-            self._conn.execute('''
-                INSERT OR IGNORE INTO dashboard_agents (agent_id, name, url, scan_interval_minutes, agent_type)
-                VALUES 
-                ('default-hr', 'HR Agent', 'http://localhost:8200/agent/hr', 1440, 'a2a'),
-                ('default-finance', 'Finance Agent', 'http://localhost:8200/agent/finance', 1440, 'a2a')
-            ''')
+
+            # Remove legacy demo rows that were auto-seeded before explicit tracking existed.
+            self._conn.execute("DELETE FROM dashboard_agents WHERE agent_id LIKE 'default-%'")
             
             self._conn.commit()
 
@@ -54,22 +50,48 @@ class DashboardRepository:
             self.initialize()
         return self._conn
 
+    @staticmethod
+    def _normalize_url(url: Optional[str]) -> str:
+        if not url:
+            return ""
+        return url.strip().rstrip("/").lower()
+
+    def _find_agent_id_by_url(self, url: str) -> Optional[str]:
+        if not url:
+            return None
+        conn = self._get_conn()
+        target = self._normalize_url(url)
+        rows = conn.execute("SELECT agent_id, url FROM dashboard_agents").fetchall()
+        for row in rows:
+            if self._normalize_url(row["url"]) == target:
+                return row["agent_id"]
+        return None
+
     def add_agent(self, name: str, url: str, scan_interval_minutes: int, agent_type: str = "a2a") -> str:
         conn = self._get_conn()
         agent_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
+        canonical_url = url.strip().rstrip("/")
         
-        # Check if already exists
-        r = conn.execute("SELECT agent_id FROM dashboard_agents WHERE url = ?", (url,)).fetchone()
-        if r:
-            return r["agent_id"]
+        # Check if already exists — update metadata so MCP re-tracks fix agent_type
+        existing_id = self._find_agent_id_by_url(canonical_url)
+        if existing_id:
+            with self._write_lock:
+                conn.execute(
+                    "UPDATE dashboard_agents SET name = ?, url = ?, scan_interval_minutes = ?, agent_type = ? WHERE agent_id = ?",
+                    (name, canonical_url, scan_interval_minutes, agent_type, existing_id),
+                )
+                conn.commit()
+            self.sync_agent_from_latest_scan(existing_id)
+            return existing_id
 
         with self._write_lock:
             conn.execute(
                 "INSERT INTO dashboard_agents (agent_id, name, url, scan_interval_minutes, agent_type, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (agent_id, name, url, scan_interval_minutes, agent_type, now.isoformat())
+                (agent_id, name, canonical_url, scan_interval_minutes, agent_type, now.isoformat())
             )
             conn.commit()
+        self.sync_agent_from_latest_scan(agent_id)
         return agent_id
 
     def update_agent_interval(self, agent_id: str, scan_interval_minutes: int):
@@ -84,7 +106,7 @@ class DashboardRepository:
             )
             conn.commit()
 
-    def update_agent_scan(self, agent_id: str, last_score: float):
+    def update_agent_scan(self, agent_id: str, last_score: float, last_scan_time: Optional[str] = None):
         conn = self._get_conn()
         r = conn.execute("SELECT scan_interval_minutes FROM dashboard_agents WHERE agent_id = ?", (agent_id,)).fetchone()
         if not r:
@@ -92,20 +114,30 @@ class DashboardRepository:
             
         interval = r["scan_interval_minutes"]
         now = datetime.now(timezone.utc)
+        scan_time = last_scan_time or now.isoformat()
         next_scan = now + timedelta(minutes=interval) if interval > 0 else None
         
         with self._write_lock:
             conn.execute(
                 "UPDATE dashboard_agents SET last_score = ?, last_scan_time = ?, next_scan_time = ? WHERE agent_id = ?",
-                (last_score, now.isoformat(), next_scan.isoformat() if next_scan else None, agent_id)
+                (last_score, scan_time, next_scan.isoformat() if next_scan else None, agent_id)
             )
             conn.commit()
 
     def update_agent_scan_by_url(self, url: str, target_name: str, last_score: float):
-        conn = self._get_conn()
-        r = conn.execute("SELECT agent_id FROM dashboard_agents WHERE url = ? OR name = ?", (url, target_name)).fetchone()
-        if r:
-            self.update_agent_scan(r["agent_id"], last_score)
+        agent_id = self._find_agent_id_by_url(url)
+        if not agent_id and target_name:
+            agent_id = self._find_agent_id_by_url(target_name)
+        if not agent_id and target_name:
+            conn = self._get_conn()
+            r = conn.execute(
+                "SELECT agent_id FROM dashboard_agents WHERE name = ?",
+                (target_name,),
+            ).fetchone()
+            if r:
+                agent_id = r["agent_id"]
+        if agent_id:
+            self.update_agent_scan(agent_id, last_score)
 
     def remove_agent(self, agent_id: str):
         conn = self._get_conn()
@@ -113,10 +145,85 @@ class DashboardRepository:
             conn.execute("DELETE FROM dashboard_agents WHERE agent_id = ?", (agent_id,))
             conn.commit()
 
+    def _scan_matches_agent(self, scan: Dict, agent: Dict) -> bool:
+        expected_type = "mcp" if (agent.get("agent_type") or "").lower() == "mcp" else "agent"
+        if scan.get("scan_type") != expected_type:
+            return False
+
+        agent_url = self._normalize_url(agent.get("url"))
+        agent_name = (agent.get("name") or "").strip().lower()
+        target_name = scan.get("target_name") or ""
+        target_norm = self._normalize_url(target_name)
+        target_lower = target_name.strip().lower()
+
+        report = scan.get("report") or {}
+        fetched = self._normalize_url(report.get("fetched_from"))
+
+        return (
+            target_norm == agent_url
+            or target_lower == agent_name
+            or target_name == agent.get("url")
+            or target_name == agent.get("name")
+            or (fetched and fetched == agent_url)
+        )
+
+    def _find_latest_scan_for_agent(self, agent: Dict) -> Optional[Dict]:
+        try:
+            from security.scan_repository import scan_repository
+            scans = scan_repository.get_all_scans()
+        except Exception:
+            return None
+
+        matching = [scan for scan in scans if self._scan_matches_agent(scan, agent)]
+        if not matching:
+            return None
+
+        return max(matching, key=lambda scan: scan.get("created_at") or "")
+
+    def sync_agent_from_latest_scan(self, agent_id: str) -> None:
+        conn = self._get_conn()
+        row = conn.execute("SELECT * FROM dashboard_agents WHERE agent_id = ?", (agent_id,)).fetchone()
+        if not row:
+            return
+
+        agent = dict(row)
+        if agent.get("last_score") is not None:
+            return
+
+        latest = self._find_latest_scan_for_agent(agent)
+        if not latest or latest.get("risk_score") is None:
+            return
+
+        self.update_agent_scan(
+            agent_id,
+            float(latest["risk_score"]),
+            latest.get("created_at"),
+        )
+
+    def _enrich_agent_with_latest_scan(self, agent: Dict) -> Dict:
+        if agent.get("last_score") is not None:
+            return agent
+
+        latest = self._find_latest_scan_for_agent(agent)
+        if not latest or latest.get("risk_score") is None:
+            return agent
+
+        enriched = dict(agent)
+        enriched["last_score"] = latest["risk_score"]
+        enriched["last_scan_time"] = latest.get("created_at")
+        self.sync_agent_from_latest_scan(agent["agent_id"])
+        return enriched
+
     def get_all_agents(self) -> List[Dict]:
         conn = self._get_conn()
         rows = conn.execute("SELECT * FROM dashboard_agents ORDER BY created_at DESC").fetchall()
-        return [dict(r) for r in rows]
+        # Only return agents explicitly tracked via the scanner "Track on Dashboard" flow.
+        agents = [
+            dict(r)
+            for r in rows
+            if not str(r["agent_id"]).startswith("default-")
+        ]
+        return [self._enrich_agent_with_latest_scan(agent) for agent in agents]
 
     def get_agents_due_for_scan(self) -> List[Dict]:
         conn = self._get_conn()
