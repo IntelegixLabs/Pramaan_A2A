@@ -29,6 +29,16 @@ Built with **LangChain**, **A2A SDK**, **AG-UI Protocol**, **FastAPI**, and **Re
 
 HandshakeOS extends the [A2A Protocol](https://a2a-protocol.org/latest/specification/) with a **mandatory Proof-of-Authority governance handshake**. Every agent-to-agent request must pass through **16 security layers** before execution:
 
+
+### Global Security Pipeline
+A unified interceptor layer that all agent requests pass through before entering the AGL Gateway:
+- **PII Redactor**: Regex-based engine masking sensitive entities (Email, SSN, Credit Cards, API Keys).
+- **Goal Integrity Checker**: Validates that requested tools align perfectly with the user's intent.
+- **OPA / Rego Engine**: Centralized access control evaluating `principal` and `tool risk` against declarative `.rego` policies.
+- **Sandbox Limits**: Hard limits on autonomy budgets and a strict blocklist for unsafe tools (e.g. `run_shell`).
+- **Human Review Queue**: High-risk actions identified by OPA pause execution and route to a human-in-the-loop UI.
+- **Output Validator**: Final scan of the agent's output against a blocklist before returning payload.
+
 ### Core Governance (10 Steps)
 -  **Verifiable Credential** : Agent Passport (W3C VC Data Model v2.0)
 -  **Human-backed delegation proof** : Chain of Command with hash-chain ledger
@@ -40,15 +50,6 @@ HandshakeOS extends the [A2A Protocol](https://a2a-protocol.org/latest/specifica
 -  **Circuit breaker** : Automatic agent quarantine on risk threshold breach
 -  **Trust Receipt ledger** : Append-only audit trail of all governance decisions
 - **Segregation of duties** : Agents cannot self-approve
-
-### Global Security Pipeline (New!)
-A unified interceptor layer that all agent requests pass through before entering the AGL Gateway:
-- **PII Redactor**: Regex-based engine masking sensitive entities (Email, SSN, Credit Cards, API Keys).
-- **Goal Integrity Checker**: Validates that requested tools align perfectly with the user's intent.
-- **OPA / Rego Engine**: Centralized access control evaluating `principal` and `tool risk` against declarative `.rego` policies.
-- **Sandbox Limits**: Hard limits on autonomy budgets and a strict blocklist for unsafe tools (e.g. `run_shell`).
-- **Human Review Queue**: High-risk actions identified by OPA pause execution and route to a human-in-the-loop UI.
-- **Output Validator**: Final scan of the agent's output against a blocklist before returning payload.
 
 ### Advanced Security (6 Modules)
 -  **Security Audit Logger** : Tamper-evident hash-chained audit trail (14 categories, 5 severity levels)
@@ -192,7 +193,12 @@ python test_smoke.py
   <img src="docs/screenshots/4.png" width="400"/>
   <img src="docs/screenshots/5.png" width="400"/>
   <img src="docs/screenshots/6.png" width="400"/>
-<img src="docs/screenshots/7.png" width="400"/>
+  <img src="docs/screenshots/7.png" width="400"/>
+  <img src="docs/screenshots/8.png" width="400"/>
+  <img src="docs/screenshots/9.png" width="400"/>
+  <img src="docs/screenshots/10.png" width="400"/>
+  <img src="docs/screenshots/11.png" width="400"/>
+  <img src="docs/screenshots/12.png" width="400"/>
 </p>
 <br />
 
